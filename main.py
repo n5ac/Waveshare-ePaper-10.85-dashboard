@@ -51,6 +51,18 @@ ENABLE_CODEX = False
 ENABLE_CLAUDE = False
 ENABLE_SPOTIFY = False
 
+# --- DISPLAY PANEL ---
+# Which 10.85" panel is attached. Both are 1360x480 but use different
+# controllers and are NOT interchangeable:
+#   'BW' - 10.85inch e-Paper (black/white). Partial refresh, one frame a minute.
+#   'G'  - 10.85inch e-Paper (G) (black/white/yellow/red). The driver HAT has a
+#          round "G" sticker. No partial refresh: every frame is a ~20 s full
+#          refresh, so it updates every REFRESH_INTERVAL_G seconds and the
+#          panel deep-sleeps in between.
+PANEL_TYPE = 'G'
+REFRESH_INTERVAL_BW = 60
+REFRESH_INTERVAL_G = 300
+
 # --- API ENDPOINTS ---
 API_ENDPOINTS = {
     'weather': 'https://api.open-meteo.com/v1/forecast',
@@ -116,7 +128,7 @@ finally:
     os.chdir(_prev_cwd)
 
 try:
-    from waveshare_epd import epd10in85
+    from waveshare_epd import epd10in85, epd10in85g
     import bambulabs_api as bl
     from roborock.web_api import RoborockApiClient
     from roborock.devices.device_manager import create_device_manager, UserParams
@@ -1253,17 +1265,34 @@ def main():
     epd = None
 
     try:
-        epd = epd10in85.EPD()
+        if PANEL_TYPE == 'G':
+            epd_module = epd10in85g
+            refresh_interval = REFRESH_INTERVAL_G
+        else:
+            epd_module = epd10in85
+            refresh_interval = REFRESH_INTERVAL_BW
+        logging.info(f"Panel type {PANEL_TYPE}, refresh every {refresh_interval}s")
+
+        epd = epd_module.EPD()
         # Panel setup runs before the render loop, so it is not covered by the
-        # per-frame watchdog below. ReadBusy() has no timeout, so a panel that
-        # never releases BUSY (unplugged, half-seated, wedged) blocks here
-        # forever with no error anywhere. Arm the watchdog so it fails instead.
+        # per-frame watchdog below. Arm the watchdog so a panel that never
+        # releases BUSY (unplugged, half-seated, wrong PANEL_TYPE) fails
+        # instead of hanging.
         signal.alarm(120)
-        epd.init()
-        epd.Clear()
-        signal.alarm(0)
-        time.sleep(1)
-        epd.init_Part()
+        if PANEL_TYPE == 'G':
+            # No Clear() here: on the (G) panel every frame is already a full
+            # refresh, and a Clear would add another ~20 s flash at startup.
+            # Just confirm the controller powers up, then park it in deep sleep.
+            if epd.init() != 0:
+                raise HardwareTimeoutError("10.85in (G) panel did not power up")
+            epd.sleep()
+            signal.alarm(0)
+        else:
+            epd.init()
+            epd.Clear()
+            signal.alarm(0)
+            time.sleep(1)
+            epd.init_Part()
 
         def load_font(name, size):
             return ImageFont.truetype(os.path.join(FONT_DIR, name), size)
@@ -1291,6 +1320,11 @@ def main():
 
         refresh_counter = 0
 
+        if PANEL_TYPE == 'G':
+            # The first (G) frame stays up for REFRESH_INTERVAL_G seconds, so
+            # give the data thread a head start instead of showing empty widgets.
+            time.sleep(20)
+
         while True:
             start_time = time.time()
             try:
@@ -1300,7 +1334,20 @@ def main():
                 image = render_screen(epd, fonts)
                 buf = epd.getbuffer(image)
 
-                if refresh_counter >= 600:
+                if PANEL_TYPE == 'G':
+                    # (G) panel: no partial refresh. Wake, full refresh (~20 s),
+                    # then back to deep sleep until the next interval.
+                    logging.info("Full refresh (G panel)")
+                    signal.alarm(150)
+                    if epd.init() != 0:
+                        raise HardwareTimeoutError("(G) panel init: BUSY never released")
+                    ok = epd.display(buf)
+                    epd.sleep()
+                    signal.alarm(0)
+                    if not ok:
+                        raise HardwareTimeoutError("(G) panel refresh: BUSY never released")
+                    refresh_counter += 1
+                elif refresh_counter >= 600:
                     logging.info("Full Refresh cycle")
                     signal.alarm(90)  # full refresh flashes the whole panel, it is slow
                     epd.init()
@@ -1341,12 +1388,14 @@ def main():
                 logging.error(f"Unexpected error in main: {e}")
 
             elapsed = time.time() - start_time
-            sleep_time = max(5, 60 - elapsed)
+            sleep_time = max(5, refresh_interval - elapsed)
             time.sleep(sleep_time)
 
     except KeyboardInterrupt:
         try:
             signal.alarm(0)
+            if PANEL_TYPE == 'G' and epd is not None:
+                epd.sleep()
             epd10in85.epdconfig.module_exit(cleanup=True)
         except:
             pass

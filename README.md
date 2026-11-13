@@ -26,6 +26,7 @@ A fully functional E-ink dashboard running on a Raspberry Pi Zero 1W or 2W. Desi
 ### Hardware
 * [Raspberry Pi Zero 1W](https://www.raspberrypi.com/products/raspberry-pi-zero-w/) OR [Raspberry Pi Zero 2W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) OR [Orange Pi Zero 2W](https://www.orangepi.org/html/hardWare/computerAndMicrocontrollers/service-and-support/Orange-Pi-Zero-2W.html)
 * [Waveshare E-Ink Display 10.85"](https://www.waveshare.com/10.85inch-e-paper-hat-plus.htm?sku=29790)
+  * **or** the 4-color [10.85" e-Paper HAT+ (G)](https://www.waveshare.com/10.85inch-e-paper-hat-plus-g.htm) (black/white/yellow/red). The B/W panel is often out of stock, and Waveshare recommends the (G) instead. Its driver HAT has a round **"G"** sticker. Set `PANEL_TYPE` in `main.py` to match (see below).
 
 ### 1. System Setup
 Enable the SPI interface on your Raspberry Pi, which is required for communicating with the e-ink display:
@@ -58,6 +59,14 @@ sudo apt install -y python3-gpiozero python3-lgpio python3-spidev
 * The **patched** version of the epd10in85 library with fixed partial refresh issue already included in this package.
 
 * **(New)** Included support of Raspberry PI Zero 1.
+
+* **(New)** Support for the 4-color **10.85" e-Paper (G)** panel (`lib/waveshare_epd/epd10in85g.py`). Choose the panel in `main.py`:
+  ```python
+  PANEL_TYPE = 'G'          # 'BW' for the black/white panel, 'G' for the 4-color (G) panel
+  REFRESH_INTERVAL_G = 300  # seconds between (G) refreshes
+  ```
+  The two panels use different controllers and are **not** interchangeable. Running the B/W driver on a (G) panel leaves the screen blank and logs `ReadBusy: BUSY still LOW ... TIMEOUT`.
+  The (G) panel has **no partial refresh**: each update is a full refresh of about 20 s with a visible flash. The dashboard therefore redraws every `REFRESH_INTERVAL_G` seconds (default 5 minutes) and keeps the panel in deep sleep between updates. The clock shows the time of the last refresh. Colors in the rendered image are mapped to black/white/yellow/red without dithering.
 
 ---
 
