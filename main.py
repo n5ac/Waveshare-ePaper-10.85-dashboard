@@ -873,6 +873,22 @@ def draw_sparkline(draw, x, y, data, max_items=50, width=400, height=60, color=0
             draw.rectangle((bx, by, bx + bar_w, y + height), fill=color)
 
 
+# Claude usage bar colors on the 4-color (G) panel: yellow at >= 75 %, red at >= 90 %.
+USAGE_WARN_PCT = 75
+USAGE_CRIT_PCT = 90
+
+
+def usage_bar_color(pct):
+    """Return 'red', 'yellow' or None (stay black) for a usage percentage."""
+    try:
+        pct = float(pct)
+    except (TypeError, ValueError):
+        return None
+    if pct >= USAGE_CRIT_PCT: return 'red'
+    if pct >= USAGE_WARN_PCT: return 'yellow'
+    return None
+
+
 def get_weather_icon(code, is_day=1):
     if code == 0:
         return "icon_sun" if is_day else "icon_moon"
@@ -894,6 +910,8 @@ def get_weather_icon(code, is_day=1):
 def render_screen(epd, fonts):
     Himage = Image.new('1', (epd.width, epd.height), 255)
     draw = ImageDraw.Draw(Himage)
+    # (rect, color) pairs painted in color after the 1-bit render (G panel only)
+    color_overlays = []
 
     if not data_store.lock.acquire(timeout=2.0): return Himage
     try:
@@ -1196,7 +1214,11 @@ def render_screen(epd, fonts):
             bx, bw, bh = col3_x, 400, 15
             draw.rectangle((bx, sp_y + 65, bx + bw, sp_y + 65 + bh), outline=0, width=2)
             fill_w = int((bw - 4) * min(pct_5h / 100.0, 1.0))
-            if fill_w > 0: draw.rectangle((bx + 2, sp_y + 67, bx + 2 + fill_w, sp_y + 65 + bh - 2), fill=0)
+            if fill_w > 0:
+                rect = (bx + 2, sp_y + 67, bx + 2 + fill_w, sp_y + 65 + bh - 2)
+                draw.rectangle(rect, fill=0)
+                color = usage_bar_color(pct_5h)
+                if color: color_overlays.append((rect, color))
 
             # 7-Day Limit
             pct_7d = claude.get('seven_day', {}).get('utilization', 0)
@@ -1206,7 +1228,11 @@ def render_screen(epd, fonts):
             draw.text((col3_x, sp_y + 90), f"7-Day Limit: {pct_7d}% (Resets in {rem_7d})", font=fonts['20'], fill=0)
             draw.rectangle((bx, sp_y + 115, bx + bw, sp_y + 115 + bh), outline=0, width=2)
             fill_w = int((bw - 4) * min(pct_7d / 100.0, 1.0))
-            if fill_w > 0: draw.rectangle((bx + 2, sp_y + 117, bx + 2 + fill_w, sp_y + 115 + bh - 2), fill=0)
+            if fill_w > 0:
+                rect = (bx + 2, sp_y + 117, bx + 2 + fill_w, sp_y + 115 + bh - 2)
+                draw.rectangle(rect, fill=0)
+                color = usage_bar_color(pct_7d)
+                if color: color_overlays.append((rect, color))
 
     elif ENABLE_SPOTIFY:
         if spotify['cover']:
@@ -1257,6 +1283,13 @@ def render_screen(epd, fonts):
     gm_y = 400
     draw_icon(draw, col3_x, gm_y, "icon_mail", (60, 60))
     draw.text((col3_x + 80, gm_y + 10), f"Unread Inbox: {gmail_unread}", font=fonts['35'], fill=0)
+
+    # Only the (G) panel can show color; the B/W panel keeps the black fills.
+    if PANEL_TYPE == 'G' and color_overlays:
+        Himage = Himage.convert('RGB')
+        cdraw = ImageDraw.Draw(Himage)
+        for rect, color in color_overlays:
+            cdraw.rectangle(rect, fill=color)
 
     return Himage
 
