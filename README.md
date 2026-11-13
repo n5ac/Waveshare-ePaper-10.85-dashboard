@@ -117,11 +117,26 @@ Since the official Spotify API requires running a local web server for complex t
 **After configuration, you no longer need to use the Last.fm service, and a paid Last.fm account is not required. You can continue to use only the Spotify service.**
 
 ### Gmail
-1. Go to the Google Cloud Console.
-2. Create a new project and enable the **Gmail API**.
-3. Create OAuth 2.0 Client ID credentials (choose "Desktop Application" as the application type).
-4. Download the generated JSON file, rename it exactly to `credentials.json` (if your setup requires it, or just use `token.json` generation), and place it in the same directory as the script.
-5. On the first run, the script will open a browser window (or provide a link) for you to log in and grant read-only access. It will generate a `token.json` file for all future headless authentications.
+The dashboard only *reads* `token.json`; it never starts a sign-in itself. If the file is missing or invalid, the widget shows 0 unread. Create the token once on a computer with a web browser, then copy it to the Pi.
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/), create a project and enable the **Gmail API** (APIs & Services → Library).
+2. Configure the consent screen (Google Auth Platform / OAuth consent screen):
+   * **Internal** audience (Google Workspace accounts only): nothing else to do.
+   * **External** audience (e.g. a @gmail.com account): under **Audience**, click **Publish app** so it is *In production*. In *Testing* status the token expires after 7 days and the count silently drops to 0. At sign-in you will see "Google hasn't verified this app"; choose **Advanced → Go to … (unsafe)**.
+3. Under **Clients**, create a client of type **Desktop app** and download its JSON. Save it in this directory as `credentials.json`.
+4. Run the helper (needs `pip install google-auth-oauthlib`):
+   ```shell
+   python3 gmail_auth.py
+   ```
+   Approve read-only access in the browser. It writes `token.json` and should report `refresh token: yes`.
+5. Copy `token.json` to the dashboard directory on the Pi and restrict it:
+   ```shell
+   scp token.json pi@<pi-host>:~/Waveshare-ePaper-10.85-dashboard/
+   ssh pi@<pi-host> chmod 600 ~/Waveshare-ePaper-10.85-dashboard/token.json
+   ```
+   The Pi refreshes the token on its own from then on. `credentials.json` is not needed on the Pi.
+
+The count is unread messages in the whole Inbox (all tabs, not just Primary). `credentials.json` and `token.json` are listed in `.gitignore`; never commit them.
 
 ---
 

@@ -1,0 +1,11 @@
+# Secrets and tokens (never commit)
+credentials.json
+token.json
+claude_creds.json
+usage.json
+roborock_session.pkl
+roborock_stats.json
+
+# Runtime
+*.log
+__pycache__/
