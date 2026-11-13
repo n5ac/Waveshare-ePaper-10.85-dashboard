@@ -268,7 +268,7 @@ class DataStore:
         }
         self.sysload = {'cpu': 0, 'ram_free': 0, 'history': deque(maxlen=30)}
         self.crypto = {'btc': 0, 'eth': 0, 'btc_hist': [], 'eth_hist': []}
-        self.ping = {'current': 0, 'history': deque(maxlen=50)}
+        self.ping = {'current': None, 'history': deque(maxlen=50)}
 
         self.last_update = {
             'weather': 0, 'strava': 0, 'printer': 0, 'gmail': 0,
@@ -620,234 +620,247 @@ def update_data_thread():
 
     while True:
         now = time.time()
+        try:
 
-        if now - data_store.last_update['weather'] > 600:
-            weather_url = f"{API_ENDPOINTS['weather']}?latitude={LOCATION_LAT}&longitude={LOCATION_LON}&current=temperature_2m,relative_humidity_2m,surface_pressure,wind_speed_10m,wind_direction_10m,weather_code,is_day,uv_index&hourly=temperature_2m,precipitation_probability,weather_code,cloud_cover&timezone=auto&forecast_days=2"
-            if TEMP_UNIT == 'F':
-                weather_url += "&temperature_unit=fahrenheit"
-            if WIND_UNIT != 'kmh':
-                weather_url += f"&wind_speed_unit={WIND_UNIT}"
-            aqi_url = f"{API_ENDPOINTS['aqi']}?latitude={LOCATION_LAT}&longitude={LOCATION_LON}&current=european_aqi&timezone=auto"
-            w_data = net.get_json(weather_url)
-            a_data = net.get_json(aqi_url)
-            with data_store.lock:
-                if w_data: data_store.weather = w_data
-                if a_data and 'current' in a_data: data_store.aqi = a_data['current'].get('european_aqi', 0)
-            data_store.last_update['weather'] = now
+            if now - data_store.last_update['weather'] > 600:
+                weather_url = f"{API_ENDPOINTS['weather']}?latitude={LOCATION_LAT}&longitude={LOCATION_LON}&current=temperature_2m,relative_humidity_2m,surface_pressure,wind_speed_10m,wind_direction_10m,weather_code,is_day,uv_index&hourly=temperature_2m,precipitation_probability,weather_code,cloud_cover&timezone=auto&forecast_days=2"
+                if TEMP_UNIT == 'F':
+                    weather_url += "&temperature_unit=fahrenheit"
+                if WIND_UNIT != 'kmh':
+                    weather_url += f"&wind_speed_unit={WIND_UNIT}"
+                aqi_url = f"{API_ENDPOINTS['aqi']}?latitude={LOCATION_LAT}&longitude={LOCATION_LON}&current=european_aqi&timezone=auto"
+                w_data = net.get_json(weather_url)
+                a_data = net.get_json(aqi_url)
+                with data_store.lock:
+                    if w_data: data_store.weather = w_data
+                    if a_data and 'current' in a_data: data_store.aqi = a_data['current'].get('european_aqi', 0)
+                data_store.last_update['weather'] = now
 
-        if ENABLE_STRAVA:
-            if now - data_store.last_update['strava'] > 900:
-                s_data = fetch_strava_data()
-                if s_data:
-                    with data_store.lock: data_store.strava = s_data
-                data_store.last_update['strava'] = now
-        else:
-            if now - data_store.last_update['sysload'] > 30:
-                try:
-                    with open('/proc/loadavg', 'r') as f:
-                        cpu = float(f.read().split()[0]) * 10
-                    with open('/proc/meminfo', 'r') as f:
-                        lines = f.readlines()
-                        free = int(lines[1].split()[1]) // 1024
-                    with data_store.lock:
-                        data_store.sysload['cpu'] = min(int(cpu), 100)
-                        data_store.sysload['ram_free'] = free
-                        data_store.sysload['history'].append(min(int(cpu), 100))
-                except:
-                    pass
-                data_store.last_update['sysload'] = now
-
-        if ENABLE_BAMBU:
-            update_interval = 5 if is_connected else 15
-            if now - data_store.last_update['printer'] > update_interval:
-                is_alive = ping_printer(PRINTER_CONF['IP'])
-                if is_alive:
+            if ENABLE_STRAVA:
+                if now - data_store.last_update['strava'] > 900:
+                    s_data = fetch_strava_data()
+                    if s_data:
+                        with data_store.lock: data_store.strava = s_data
+                    data_store.last_update['strava'] = now
+            else:
+                if now - data_store.last_update['sysload'] > 30:
                     try:
-                        if not is_connected and global_printer:
-                            global_printer.connect()
-                            time.sleep(1)
-                            is_connected = True
-                        if global_printer:
-                            status = global_printer.get_state()
-                            if status and status != "UNKNOWN":
-                                with data_store.lock:
-                                    data_store.printer = {
-                                        'status': status,
-                                        'percentage': global_printer.get_percentage(),
-                                        'remaining_time': global_printer.get_time(),
-                                        'layers': f"{global_printer.current_layer_num()}/{global_printer.total_layer_num()}"
-                                    }
-                    except Exception as e:
-                        is_connected = False
+                        with open('/proc/loadavg', 'r') as f:
+                            cpu = float(f.read().split()[0]) * 10
+                        with open('/proc/meminfo', 'r') as f:
+                            lines = f.readlines()
+                            free = int(lines[1].split()[1]) // 1024
+                        with data_store.lock:
+                            data_store.sysload['cpu'] = min(int(cpu), 100)
+                            data_store.sysload['ram_free'] = free
+                            data_store.sysload['history'].append(min(int(cpu), 100))
+                    except:
+                        pass
+                    data_store.last_update['sysload'] = now
+
+            if ENABLE_BAMBU:
+                update_interval = 5 if is_connected else 15
+                if now - data_store.last_update['printer'] > update_interval:
+                    is_alive = ping_printer(PRINTER_CONF['IP'])
+                    if is_alive:
+                        try:
+                            if not is_connected and global_printer:
+                                global_printer.connect()
+                                time.sleep(1)
+                                is_connected = True
+                            if global_printer:
+                                status = global_printer.get_state()
+                                if status and status != "UNKNOWN":
+                                    with data_store.lock:
+                                        data_store.printer = {
+                                            'status': status,
+                                            'percentage': global_printer.get_percentage(),
+                                            'remaining_time': global_printer.get_time(),
+                                            'layers': f"{global_printer.current_layer_num()}/{global_printer.total_layer_num()}"
+                                        }
+                        except Exception as e:
+                            is_connected = False
+                            with data_store.lock:
+                                data_store.printer['status'] = 'OFFLINE'
+                            try:
+                                if global_printer: global_printer.disconnect()
+                            except:
+                                pass
+                    else:
+                        if is_connected:
+                            is_connected = False
+                            try:
+                                global_printer.disconnect()
+                            except:
+                                pass
                         with data_store.lock:
                             data_store.printer['status'] = 'OFFLINE'
-                        try:
-                            if global_printer: global_printer.disconnect()
-                        except:
-                            pass
-                else:
-                    if is_connected:
-                        is_connected = False
-                        try:
-                            global_printer.disconnect()
-                        except:
-                            pass
+                    data_store.last_update['printer'] = now
+            else:
+                if now - data_store.last_update['crypto'] > 600:
+                    btc_url = f"{API_ENDPOINTS['btc']}?vs_currency=usd&days=7"
+                    eth_url = f"{API_ENDPOINTS['eth']}?vs_currency=usd&days=7"
+                    btc_data = net.get_json(btc_url)
+                    eth_data = net.get_json(eth_url)
                     with data_store.lock:
-                        data_store.printer['status'] = 'OFFLINE'
-                data_store.last_update['printer'] = now
-        else:
-            if now - data_store.last_update['crypto'] > 600:
-                btc_url = f"{API_ENDPOINTS['btc']}?vs_currency=usd&days=7"
-                eth_url = f"{API_ENDPOINTS['eth']}?vs_currency=usd&days=7"
-                btc_data = net.get_json(btc_url)
-                eth_data = net.get_json(eth_url)
-                with data_store.lock:
-                    if btc_data:
-                        prices = [p[1] for p in btc_data.get('prices', [])]
-                        if prices:
-                            data_store.crypto['btc'] = int(prices[-1])
-                            data_store.crypto['btc_hist'] = prices[::len(prices) // 50][:50]
-                    if eth_data:
-                        prices = [p[1] for p in eth_data.get('prices', [])]
-                        if prices:
-                            data_store.crypto['eth'] = int(prices[-1])
-                            data_store.crypto['eth_hist'] = prices[::len(prices) // 50][:50]
-                data_store.last_update['crypto'] = now
+                        if btc_data:
+                            prices = [p[1] for p in btc_data.get('prices', [])]
+                            if prices:
+                                data_store.crypto['btc'] = int(prices[-1])
+                                data_store.crypto['btc_hist'] = prices[::max(len(prices) // 50, 1)][:50]
+                        if eth_data:
+                            prices = [p[1] for p in eth_data.get('prices', [])]
+                            if prices:
+                                data_store.crypto['eth'] = int(prices[-1])
+                                data_store.crypto['eth_hist'] = prices[::max(len(prices) // 50, 1)][:50]
+                    data_store.last_update['crypto'] = now
 
-        if not ENABLE_ROBOROCK and not ENABLE_ANTIGRAVITY:
-            if now - data_store.last_update['ping'] > 20:
+            if not ENABLE_ROBOROCK and not ENABLE_ANTIGRAVITY:
+                if now - data_store.last_update['ping'] > 20:
+                    # A failed ping is recorded as None (shown as "no reply"), not
+                    # 0 ms, so an outage can't pass for a perfect connection.
+                    try:
+                        out = subprocess.check_output(['ping', '-c', '1', '-W', '2', '8.8.8.8'],
+                                                      stderr=subprocess.STDOUT, timeout=5).decode('utf-8')
+                        ms = round(float(out.split('time=')[1].split(' ms')[0]))
+                    except subprocess.CalledProcessError as e:
+                        logging.warning(f"Ping failed (rc={e.returncode}): {e.output.decode('utf-8', 'replace').strip()[-200:]}")
+                        ms = None
+                    except Exception as e:
+                        logging.warning(f"Ping error: {e!r}")
+                        ms = None
+                    with data_store.lock:
+                        data_store.ping['current'] = ms
+                        data_store.ping['history'].append(ms)
+                    data_store.last_update['ping'] = now
+
+            if now - data_store.last_update['gmail'] > 300:
                 try:
-                    out = subprocess.check_output(['ping', '-c', '1', '-W', '1', '8.8.8.8']).decode('utf-8')
-                    ms = float(out.split('time=')[1].split(' ms')[0])
-                except:
-                    ms = 0
-                with data_store.lock:
-                    data_store.ping['current'] = int(ms)
-                    data_store.ping['history'].append(int(ms))
-                data_store.last_update['ping'] = now
-
-        if now - data_store.last_update['gmail'] > 300:
-            try:
-                creds = None
-                if os.path.exists(GMAIL_TOKEN_PATH):
-                    creds = Credentials.from_authorized_user_file(GMAIL_TOKEN_PATH, GMAIL_SCOPES)
-                    if creds and creds.expired and creds.refresh_token:
-                        creds.refresh(Request())
-                        with open(GMAIL_TOKEN_PATH, 'w') as t: t.write(creds.to_json())
-                if creds and creds.valid:
-                    service = build('gmail', 'v1', credentials=creds, cache_discovery=False)
-                    label_info = service.users().labels().get(userId='me', id='INBOX').execute()
-                    with data_store.lock: data_store.gmail_unread = label_info.get('messagesUnread', 0)
-            except:
-                pass
-            data_store.last_update['gmail'] = now
-
-        # Claude Data Fetching (Run external script every 10 min)
-        if ENABLE_CLAUDE and now - data_store.last_update['claude'] > 600:
-            try:
-                subprocess.run([sys.executable, os.path.join(BASE_DIR, 'claude.py')], capture_output=True, timeout=30)
-                usage_path = os.path.join(BASE_DIR, 'usage.json')
-                if os.path.exists(usage_path):
-                    with open(usage_path, 'r') as f:
-                        usage_data = json.load(f)
-                    with data_store.lock:
-                        data_store.claude = usage_data
-                        if "error" in usage_data and "five_hour" not in usage_data:
-                            data_store.claude['error'] = True
-                        else:
-                            data_store.claude['error'] = False
-                else:
-                    with data_store.lock:
-                        data_store.claude['error'] = True
-            except Exception as e:
-                logging.error(f"Claude update error: {e}")
-                with data_store.lock:
-                    data_store.claude['error'] = True
-            data_store.last_update['claude'] = now
-
-        # Codex Data Fetching (Run external script every 10 min)
-        if ENABLE_CODEX and now - data_store.last_update['codex'] > 600:
-            try:
-                subprocess.run([sys.executable, os.path.join(BASE_DIR, 'codex.py'), '--once'],
-                               capture_output=True, timeout=30)
-                usage_path = os.path.join(BASE_DIR, 'codex_usage.json')
-                if os.path.exists(usage_path):
-                    with open(usage_path, 'r') as f:
-                        usage_data = json.load(f)
-                    with data_store.lock:
-                        data_store.codex = usage_data
-                        # codex.py signals failure with utilization = -1.0 (not an
-                        # "error" key like claude.py), so check both.
-                        sd = usage_data.get('seven_day', {})
-                        if usage_data.get('error') or 'seven_day' not in usage_data \
-                                or sd.get('utilization', -1) < 0:
-                            data_store.codex['error'] = True
-                        else:
-                            data_store.codex['error'] = False
-                else:
-                    with data_store.lock:
-                        data_store.codex['error'] = True
-            except Exception as e:
-                logging.error(f"Codex update error: {e}")
-                with data_store.lock:
-                    data_store.codex['error'] = True
-            data_store.last_update['codex'] = now
-
-        if ENABLE_ANTIGRAVITY and now - data_store.last_update['antigravity'] > 60:
-            try:
-                subprocess.run([sys.executable, os.path.join(BASE_DIR, 'antigravity.py')], capture_output=True, timeout=30)
-                limits_path = os.path.join(BASE_DIR, 'limits.json')
-                if os.path.exists(limits_path):
-                    with open(limits_path, 'r', encoding='utf-8') as f:
-                        limits_data = json.load(f)
-                    with data_store.lock:
-                        data_store.antigravity = limits_data
-                        if "error" in limits_data:
-                            data_store.antigravity['error'] = True
-                        else:
-                            data_store.antigravity['error'] = False
-                else:
-                    with data_store.lock:
-                        data_store.antigravity['error'] = True
-            except Exception as e:
-                logging.error(f"Antigravity update error: {e}")
-                with data_store.lock:
-                    data_store.antigravity['error'] = True
-            data_store.last_update['antigravity'] = now
-
-        if ENABLE_SPOTIFY and now - data_store.last_update['spotify'] > 20:
-            url = f"{API_ENDPOINTS['lastfm']}?method=user.getrecenttracks&user={LASTFM_CONF['USERNAME']}&api_key={LASTFM_CONF['API_KEY']}&format=json&limit=2&rnd={int(now)}"
-            s_data = net.get_json(url, timeout=5)
-            if s_data:
-                try:
-                    tracks = s_data.get('recenttracks', {}).get('track', [])
-                    if isinstance(tracks, dict): tracks = [tracks]
-                    if tracks:
-                        current_track = tracks[0]
-                        is_playing = current_track.get('@attr', {}).get('nowplaying') == 'true'
-                        if is_playing:
-                            track_name = current_track.get('name', 'Unknown')
-                            artist = current_track.get('artist', {}).get('#text', 'Unknown')
-                            img_url = ""
-                            for img in current_track.get('image', []):
-                                if img.get('size') == 'extralarge': img_url = img.get('#text', '')
-                            cover_dithered = None
-                            if img_url:
-                                img_bytes = net.get_image(img_url)
-                                if img_bytes:
-                                    img_pil = Image.open(io.BytesIO(img_bytes)).convert("L").resize((120, 120))
-                                    enhancer = ImageEnhance.Contrast(img_pil)
-                                    img_pil = enhancer.enhance(3.0)
-                                    cover_dithered = img_pil.convert("1", dither=Image.NONE)
-                            with data_store.lock:
-                                data_store.spotify = {'status': 'PLAYING', 'text': f"{artist} - {track_name}",
-                                                      'cover': cover_dithered}
-                        else:
-                            with data_store.lock:
-                                data_store.spotify = {'status': 'PAUSED', 'text': '', 'cover': None}
+                    creds = None
+                    if os.path.exists(GMAIL_TOKEN_PATH):
+                        creds = Credentials.from_authorized_user_file(GMAIL_TOKEN_PATH, GMAIL_SCOPES)
+                        if creds and creds.expired and creds.refresh_token:
+                            creds.refresh(Request())
+                            with open(GMAIL_TOKEN_PATH, 'w') as t: t.write(creds.to_json())
+                    if creds and creds.valid:
+                        service = build('gmail', 'v1', credentials=creds, cache_discovery=False)
+                        label_info = service.users().labels().get(userId='me', id='INBOX').execute()
+                        with data_store.lock: data_store.gmail_unread = label_info.get('messagesUnread', 0)
                 except:
                     pass
-            data_store.last_update['spotify'] = now
+                data_store.last_update['gmail'] = now
+
+            # Claude Data Fetching (Run external script every 10 min)
+            if ENABLE_CLAUDE and now - data_store.last_update['claude'] > 600:
+                try:
+                    subprocess.run([sys.executable, os.path.join(BASE_DIR, 'claude.py')], capture_output=True, timeout=30)
+                    usage_path = os.path.join(BASE_DIR, 'usage.json')
+                    if os.path.exists(usage_path):
+                        with open(usage_path, 'r') as f:
+                            usage_data = json.load(f)
+                        with data_store.lock:
+                            data_store.claude = usage_data
+                            if "error" in usage_data and "five_hour" not in usage_data:
+                                data_store.claude['error'] = True
+                            else:
+                                data_store.claude['error'] = False
+                    else:
+                        with data_store.lock:
+                            data_store.claude['error'] = True
+                except Exception as e:
+                    logging.error(f"Claude update error: {e}")
+                    with data_store.lock:
+                        data_store.claude['error'] = True
+                data_store.last_update['claude'] = now
+
+            # Codex Data Fetching (Run external script every 10 min)
+            if ENABLE_CODEX and now - data_store.last_update['codex'] > 600:
+                try:
+                    subprocess.run([sys.executable, os.path.join(BASE_DIR, 'codex.py'), '--once'],
+                                   capture_output=True, timeout=30)
+                    usage_path = os.path.join(BASE_DIR, 'codex_usage.json')
+                    if os.path.exists(usage_path):
+                        with open(usage_path, 'r') as f:
+                            usage_data = json.load(f)
+                        with data_store.lock:
+                            data_store.codex = usage_data
+                            # codex.py signals failure with utilization = -1.0 (not an
+                            # "error" key like claude.py), so check both.
+                            sd = usage_data.get('seven_day', {})
+                            if usage_data.get('error') or 'seven_day' not in usage_data \
+                                    or sd.get('utilization', -1) < 0:
+                                data_store.codex['error'] = True
+                            else:
+                                data_store.codex['error'] = False
+                    else:
+                        with data_store.lock:
+                            data_store.codex['error'] = True
+                except Exception as e:
+                    logging.error(f"Codex update error: {e}")
+                    with data_store.lock:
+                        data_store.codex['error'] = True
+                data_store.last_update['codex'] = now
+
+            if ENABLE_ANTIGRAVITY and now - data_store.last_update['antigravity'] > 60:
+                try:
+                    subprocess.run([sys.executable, os.path.join(BASE_DIR, 'antigravity.py')], capture_output=True, timeout=30)
+                    limits_path = os.path.join(BASE_DIR, 'limits.json')
+                    if os.path.exists(limits_path):
+                        with open(limits_path, 'r', encoding='utf-8') as f:
+                            limits_data = json.load(f)
+                        with data_store.lock:
+                            data_store.antigravity = limits_data
+                            if "error" in limits_data:
+                                data_store.antigravity['error'] = True
+                            else:
+                                data_store.antigravity['error'] = False
+                    else:
+                        with data_store.lock:
+                            data_store.antigravity['error'] = True
+                except Exception as e:
+                    logging.error(f"Antigravity update error: {e}")
+                    with data_store.lock:
+                        data_store.antigravity['error'] = True
+                data_store.last_update['antigravity'] = now
+
+            if ENABLE_SPOTIFY and now - data_store.last_update['spotify'] > 20:
+                url = f"{API_ENDPOINTS['lastfm']}?method=user.getrecenttracks&user={LASTFM_CONF['USERNAME']}&api_key={LASTFM_CONF['API_KEY']}&format=json&limit=2&rnd={int(now)}"
+                s_data = net.get_json(url, timeout=5)
+                if s_data:
+                    try:
+                        tracks = s_data.get('recenttracks', {}).get('track', [])
+                        if isinstance(tracks, dict): tracks = [tracks]
+                        if tracks:
+                            current_track = tracks[0]
+                            is_playing = current_track.get('@attr', {}).get('nowplaying') == 'true'
+                            if is_playing:
+                                track_name = current_track.get('name', 'Unknown')
+                                artist = current_track.get('artist', {}).get('#text', 'Unknown')
+                                img_url = ""
+                                for img in current_track.get('image', []):
+                                    if img.get('size') == 'extralarge': img_url = img.get('#text', '')
+                                cover_dithered = None
+                                if img_url:
+                                    img_bytes = net.get_image(img_url)
+                                    if img_bytes:
+                                        img_pil = Image.open(io.BytesIO(img_bytes)).convert("L").resize((120, 120))
+                                        enhancer = ImageEnhance.Contrast(img_pil)
+                                        img_pil = enhancer.enhance(3.0)
+                                        cover_dithered = img_pil.convert("1", dither=Image.NONE)
+                                with data_store.lock:
+                                    data_store.spotify = {'status': 'PLAYING', 'text': f"{artist} - {track_name}",
+                                                          'cover': cover_dithered}
+                            else:
+                                with data_store.lock:
+                                    data_store.spotify = {'status': 'PAUSED', 'text': '', 'cover': None}
+                    except:
+                        pass
+                data_store.last_update['spotify'] = now
+        except Exception:
+            # Never let one failing source kill the thread: every widget
+            # (ping included) would silently freeze at its last value.
+            logging.exception("Data update loop error")
+            time.sleep(30)  # back off so a persistent error can't hammer the APIs
 
         gc.collect()
         time.sleep(1)
@@ -908,6 +921,36 @@ def format_pressure(hpa):
     return f"{hpa} hPa"
 
 
+# Internet ping colors on the (G) panel: yellow above 50 ms, red above 100 ms
+# or when the ping fails.
+PING_WARN_MS = 50
+PING_CRIT_MS = 100
+
+
+def ping_color(ms):
+    """Return 'red', 'yellow' or None (stay black) for a ping result (None = failed)."""
+    if ms is None or ms > PING_CRIT_MS: return 'red'
+    if ms > PING_WARN_MS: return 'yellow'
+    return None
+
+
+def draw_ping_bars(draw, x, y, data, overlays, max_items=50, width=400, height=40):
+    """Bar graph of ping history. A failed ping (None) is a full-height bar.
+    Bars over the thresholds are queued in overlays for coloring."""
+    if not data: return
+    vals = [v for v in data if v is not None]
+    max_val = max(max(vals) if vals else 0, 1)
+    step = width / max(max_items - 1, 1)
+    bar_w = max(int(step) - 1, 1)
+    for i, val in enumerate(data):
+        bh = height if val is None else int((val / max_val) * height)
+        bx = x + i * step
+        rect = (bx, y + height - bh, bx + bar_w, y + height)
+        draw.rectangle(rect, fill=0)
+        color = ping_color(val)
+        if color and bh > 0: overlays.append(('rect', rect, color))
+
+
 def get_weather_icon(code, is_day=1):
     if code == 0:
         return "icon_sun" if is_day else "icon_moon"
@@ -929,7 +972,8 @@ def get_weather_icon(code, is_day=1):
 def render_screen(epd, fonts):
     Himage = Image.new('1', (epd.width, epd.height), 255)
     draw = ImageDraw.Draw(Himage)
-    # (rect, color) pairs painted in color after the 1-bit render (G panel only)
+    # Painted in color after the 1-bit render (G panel only):
+    #   ('rect', rect, color) or ('text', xy, text, font, color)
     color_overlays = []
 
     if not data_store.lock.acquire(timeout=2.0): return Himage
@@ -1069,8 +1113,15 @@ def render_screen(epd, fonts):
                 draw.rectangle((bx + 2, y3 + 72, bx + 2 + fill_w, y3 + 70 + bh - 2), fill=0)
     else:
         draw_icon(draw, col1_x, y3, "icon_wifi", (50, 50))
-        draw.text((col1_x + 60, y3), f"Internet Quality: {ping['current']} ms", font=fonts['28'], fill=0)
-        draw_sparkline(draw, col1_x, y3 + 60, list(ping['history']), max_items=50, width=400, height=40, style="bar")
+        if ping['history']:
+            cur_ms = ping['current']
+            ping_text = f"Internet Quality: {cur_ms} ms" if cur_ms is not None else "Internet Quality: no reply"
+            draw.text((col1_x + 60, y3), ping_text, font=fonts['28'], fill=0)
+            color = ping_color(cur_ms)
+            if color: color_overlays.append(('text', (col1_x + 60, y3), ping_text, fonts['28'], color))
+        else:
+            draw.text((col1_x + 60, y3), "Internet Quality: --", font=fonts['28'], fill=0)
+        draw_ping_bars(draw, col1_x, y3 + 60, list(ping['history']), color_overlays, max_items=50, width=400, height=40)
 
     draw.line((col_w, 10, col_w, 470), fill=0, width=2)
 
@@ -1237,7 +1288,7 @@ def render_screen(epd, fonts):
                 rect = (bx + 2, sp_y + 67, bx + 2 + fill_w, sp_y + 65 + bh - 2)
                 draw.rectangle(rect, fill=0)
                 color = usage_bar_color(pct_5h)
-                if color: color_overlays.append((rect, color))
+                if color: color_overlays.append(('rect', rect, color))
 
             # 7-Day Limit
             pct_7d = claude.get('seven_day', {}).get('utilization', 0)
@@ -1251,7 +1302,7 @@ def render_screen(epd, fonts):
                 rect = (bx + 2, sp_y + 117, bx + 2 + fill_w, sp_y + 115 + bh - 2)
                 draw.rectangle(rect, fill=0)
                 color = usage_bar_color(pct_7d)
-                if color: color_overlays.append((rect, color))
+                if color: color_overlays.append(('rect', rect, color))
 
     elif ENABLE_SPOTIFY:
         if spotify['cover']:
@@ -1307,8 +1358,13 @@ def render_screen(epd, fonts):
     if PANEL_TYPE == 'G' and color_overlays:
         Himage = Himage.convert('RGB')
         cdraw = ImageDraw.Draw(Himage)
-        for rect, color in color_overlays:
-            cdraw.rectangle(rect, fill=color)
+        for item in color_overlays:
+            if item[0] == 'rect':
+                _, rect, color = item
+                cdraw.rectangle(rect, fill=color)
+            else:
+                _, xy, text, font, color = item
+                cdraw.text(xy, text, font=font, fill=color)
 
     return Himage
 
