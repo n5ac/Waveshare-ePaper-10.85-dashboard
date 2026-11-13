@@ -205,14 +205,9 @@ def fetch_usage(access_token: str) -> dict | None:
 
 
 def save_usage(raw: dict):
-    five = raw.get("five_hour")
     seven = raw.get("seven_day")
     output = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "five_hour": {
-            "utilization": five.get("utilization", 0) if five else 0,
-            "resets_at": five.get("resets_at") if five else None,
-        },
         "seven_day": {
             "utilization": seven.get("utilization", 0) if seven else 0,
             "resets_at": seven.get("resets_at") if seven else None,

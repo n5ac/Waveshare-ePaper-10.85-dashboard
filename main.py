@@ -259,7 +259,7 @@ class DataStore:
         self.printer = {'status': 'OFFLINE'}
         self.gmail_unread = 0
         self.spotify = {'status': 'PAUSED', 'text': '', 'cover': None}
-        self.claude = {'error': False, 'five_hour': {}, 'seven_day': {}}
+        self.claude = {'error': False, 'seven_day': {}}
         self.antigravity = {'error': False, 'models': []}
         self.codex = {'error': False, 'five_hour': {}, 'seven_day': {}}
         self.roborock = {
@@ -760,7 +760,7 @@ def update_data_thread():
                             usage_data = json.load(f)
                         with data_store.lock:
                             data_store.claude = usage_data
-                            if "error" in usage_data and "five_hour" not in usage_data:
+                            if "error" in usage_data and "seven_day" not in usage_data:
                                 data_store.claude['error'] = True
                             else:
                                 data_store.claude['error'] = False
@@ -949,6 +949,21 @@ def draw_ping_bars(draw, x, y, data, overlays, max_items=50, width=400, height=4
         draw.rectangle(rect, fill=0)
         color = ping_color(val)
         if color and bh > 0: overlays.append(('rect', rect, color))
+
+
+def text_width(font, text):
+    try:
+        return font.getlength(text)
+    except AttributeError:  # Pillow < 8
+        return font.getsize(text)[0]
+
+
+def fit_font(fonts, text, max_width, sizes=('35', '32', '28', '24', '20')):
+    """Return (size_key, font) for the largest listed size whose text fits max_width."""
+    for key in sizes:
+        if text_width(fonts[key], text) <= max_width:
+            return key, fonts[key]
+    return sizes[-1], fonts[sizes[-1]]
 
 
 def get_weather_icon(code, is_day=1):
@@ -1275,31 +1290,17 @@ def render_screen(epd, fonts):
         if claude.get('error'):
             draw.text((col3_x, sp_y + 50), "Claude Usage Error", font=fonts['24'], fill=0)
         else:
-            # 5-Hour Limit
-            pct_5h = claude.get('five_hour', {}).get('utilization', 0)
-            resets_5h = claude.get('five_hour', {}).get('resets_at')
-            rem_5h = time_until(resets_5h)
-
-            draw.text((col3_x, sp_y + 40), f"5-Hour Limit: {pct_5h}% (Resets in {rem_5h})", font=fonts['20'], fill=0)
-            bx, bw, bh = col3_x, 400, 15
-            draw.rectangle((bx, sp_y + 65, bx + bw, sp_y + 65 + bh), outline=0, width=2)
-            fill_w = int((bw - 4) * min(pct_5h / 100.0, 1.0))
-            if fill_w > 0:
-                rect = (bx + 2, sp_y + 67, bx + 2 + fill_w, sp_y + 65 + bh - 2)
-                draw.rectangle(rect, fill=0)
-                color = usage_bar_color(pct_5h)
-                if color: color_overlays.append(('rect', rect, color))
-
-            # 7-Day Limit
+            # 7-Day Limit (the only Claude limit now; the 5-hour window is gone)
             pct_7d = claude.get('seven_day', {}).get('utilization', 0)
             resets_7d = claude.get('seven_day', {}).get('resets_at')
             rem_7d = time_until(resets_7d)
 
-            draw.text((col3_x, sp_y + 90), f"7-Day Limit: {pct_7d}% (Resets in {rem_7d})", font=fonts['20'], fill=0)
-            draw.rectangle((bx, sp_y + 115, bx + bw, sp_y + 115 + bh), outline=0, width=2)
+            draw.text((col3_x, sp_y + 45), f"7-Day Limit: {pct_7d}% (Resets in {rem_7d})", font=fonts['20'], fill=0)
+            bx, bw, bh = col3_x, 400, 25
+            draw.rectangle((bx, sp_y + 80, bx + bw, sp_y + 80 + bh), outline=0, width=2)
             fill_w = int((bw - 4) * min(pct_7d / 100.0, 1.0))
             if fill_w > 0:
-                rect = (bx + 2, sp_y + 117, bx + 2 + fill_w, sp_y + 115 + bh - 2)
+                rect = (bx + 2, sp_y + 82, bx + 2 + fill_w, sp_y + 80 + bh - 2)
                 draw.rectangle(rect, fill=0)
                 color = usage_bar_color(pct_7d)
                 if color: color_overlays.append(('rect', rect, color))
@@ -1352,7 +1353,12 @@ def render_screen(epd, fonts):
     # 3. Gmail
     gm_y = 400
     draw_icon(draw, col3_x, gm_y, "icon_mail", (60, 60))
-    draw.text((col3_x + 80, gm_y + 10), f"Unread Inbox: {gmail_unread}", font=fonts['35'], fill=0)
+    # Shrink the font to fit (a big inbox can be 6+ digits) and keep the
+    # text vertically centered on the 60 px icon.
+    gm_text = f"Unread Inbox: {gmail_unread:,}"
+    gm_x = col3_x + 80
+    gm_key, gm_font = fit_font(fonts, gm_text, epd.width - gm_x - 10)
+    draw.text((gm_x, gm_y + 10 + (35 - int(gm_key)) // 2), gm_text, font=gm_font, fill=0)
 
     # Only the (G) panel can show color; the B/W panel keeps the black fills.
     if PANEL_TYPE == 'G' and color_overlays:
