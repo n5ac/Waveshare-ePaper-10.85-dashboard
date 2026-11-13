@@ -127,8 +127,16 @@ except Exception as _e:
 finally:
     os.chdir(_prev_cwd)
 
+# Import only the driver for the attached panel: the B/W driver's epdconfig
+# claims the GPIO pins on import, and the (G) driver drives them through
+# Waveshare's own library. Not inside the try below, so a missing display
+# library fails loudly instead of being swallowed.
+if PANEL_TYPE == 'G':
+    from waveshare_epd import epd10in85g as epd_driver
+else:
+    from waveshare_epd import epd10in85 as epd_driver
+
 try:
-    from waveshare_epd import epd10in85, epd10in85g
     import bambulabs_api as bl
     from roborock.web_api import RoborockApiClient
     from roborock.devices.device_manager import create_device_manager, UserParams
@@ -1265,15 +1273,10 @@ def main():
     epd = None
 
     try:
-        if PANEL_TYPE == 'G':
-            epd_module = epd10in85g
-            refresh_interval = REFRESH_INTERVAL_G
-        else:
-            epd_module = epd10in85
-            refresh_interval = REFRESH_INTERVAL_BW
+        refresh_interval = REFRESH_INTERVAL_G if PANEL_TYPE == 'G' else REFRESH_INTERVAL_BW
         logging.info(f"Panel type {PANEL_TYPE}, refresh every {refresh_interval}s")
 
-        epd = epd_module.EPD()
+        epd = epd_driver.EPD()
         # Panel setup runs before the render loop, so it is not covered by the
         # per-frame watchdog below. Arm the watchdog so a panel that never
         # releases BUSY (unplugged, half-seated, wrong PANEL_TYPE) fails
@@ -1394,9 +1397,11 @@ def main():
     except KeyboardInterrupt:
         try:
             signal.alarm(0)
-            if PANEL_TYPE == 'G' and epd is not None:
-                epd.sleep()
-            epd10in85.epdconfig.module_exit(cleanup=True)
+            if PANEL_TYPE == 'G':
+                if epd is not None:
+                    epd.sleep(exit_module=True)
+            else:
+                epd_driver.epdconfig.module_exit(cleanup=True)
         except:
             pass
         exit()

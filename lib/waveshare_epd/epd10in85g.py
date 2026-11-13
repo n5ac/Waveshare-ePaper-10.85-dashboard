@@ -3,10 +3,11 @@
 # * | Function    :   Driver for the Waveshare 10.85inch e-Paper (G)
 # * |                 1360x480, 4-color (black / white / yellow / red),
 # * |                 dual controller (master = left 680 px, slave = right 680 px)
-# * | Info        :   Register sequence taken from Waveshare's
-# * |                 E-paper_Separate_Program/10.85inch_e-Paper_G demo, ported to
-# * |                 this repo's gpiozero/spidev epdconfig (hardware CE0/CE1)
-# * |                 instead of Waveshare's closed DEV_Config .so.
+# * | Info        :   Register sequence and bus handling follow Waveshare's
+# * |                 E-paper_Separate_Program/10.85inch_e-Paper_G demo. Uses
+# * |                 epdconfig_g (Waveshare's DEV_Config library): the panel
+# * |                 needs chip select held low across a whole command
+# * |                 sequence, which the kernel spidev driver cannot do.
 # *----------------
 # * | Notes       :
 # * |  - BUSY is LOW while the controller is busy, HIGH when idle.
@@ -31,7 +32,7 @@
 import logging
 import time
 from PIL import Image
-from . import epdconfig
+from . import epdconfig_g as epdconfig
 
 EPD_WIDTH  = 1360          # full panel width (two 680 px controllers side by side)
 EPD_HEIGHT = 480
@@ -61,9 +62,11 @@ except AttributeError:          # Pillow < 9.1
 
 class EPD:
     def __init__(self):
-        self.reset_pin = epdconfig.RST_PIN
-        self.dc_pin = epdconfig.DC_PIN
-        self.busy_pin = epdconfig.BUSY_PIN
+        self.cs_m_pin = epdconfig.EPD_CS_M_PIN
+        self.cs_s_pin = epdconfig.EPD_CS_S_PIN
+        self.reset_pin = epdconfig.EPD_RST_PIN
+        self.dc_pin = epdconfig.EPD_DC_PIN
+        self.busy_pin = epdconfig.EPD_BUSY_PIN
         self.width = EPD_WIDTH
         self.height = EPD_HEIGHT
 
@@ -85,33 +88,32 @@ class EPD:
         epdconfig.digital_write(self.reset_pin, 1)
         epdconfig.delay_ms(200)
 
-    def send_command_ALL(self, command):
-        epdconfig.digital_write(self.dc_pin, 0)
-        epdconfig.spi_writebyte_M([command])
-        epdconfig.spi_writebyte_S([command])
+    def cs_all(self, value):
+        epdconfig.digital_write(self.cs_m_pin, value)
+        epdconfig.digital_write(self.cs_s_pin, value)
 
-    def send_data_ALL(self, *data):
+    def send_command(self, command):
+        epdconfig.digital_write(self.dc_pin, 0)
+        epdconfig.spi_writebyte(command)
+
+    def send_data(self, data):
         epdconfig.digital_write(self.dc_pin, 1)
+        epdconfig.spi_writebyte(data)
+
+    def cmd(self, command, *data):
+        """Send a command and its parameters to whichever controllers are selected."""
+        self.send_command(command)
         for d in data:
-            epdconfig.spi_writebyte_M([d])
-            epdconfig.spi_writebyte_S([d])
+            self.send_data(d)
 
-    def cmd_ALL(self, command, *data):
-        self.send_command_ALL(command)
-        if data:
-            self.send_data_ALL(*data)
-
-    def _load_M(self, payload):
-        epdconfig.digital_write(self.dc_pin, 0)
-        epdconfig.spi_writebyte_M([0x10])
+    def _load(self, cs_pin, payload):
+        """Load one controller's half-frame into its image RAM (command 0x10)."""
+        epdconfig.digital_write(cs_pin, 0)
+        self.send_command(0x10)
         epdconfig.digital_write(self.dc_pin, 1)
-        epdconfig.spi_writebyte2_M(payload)
-
-    def _load_S(self, payload):
-        epdconfig.digital_write(self.dc_pin, 0)
-        epdconfig.spi_writebyte_S([0x10])
-        epdconfig.digital_write(self.dc_pin, 1)
-        epdconfig.spi_writebyte2_S(payload)
+        for r in range(EPD_HEIGHT):
+            epdconfig.spi_writebytes(payload[r * HALF_ROW_BYTES:(r + 1) * HALF_ROW_BYTES])
+        self.cs_all(1)
 
     def ReadBusy(self, timeout_s=60):
         """Wait for BUSY to go HIGH (idle). Returns False on timeout."""
@@ -134,42 +136,44 @@ class EPD:
         self.reset()
         self.ReadBusy()
 
-        self.cmd_ALL(0x4D, 0x78)
-        self.cmd_ALL(0xE0, 0x01)
-        self.cmd_ALL(0xE5, 0x08)
-        self.cmd_ALL(0xA2, 0x01)
-        self.cmd_ALL(0x00, 0x2F, 0x21)
-        self.cmd_ALL(0xA2, 0x02)
-        self.cmd_ALL(0x00, 0x2F, 0x21)
-        self.cmd_ALL(0xA2, 0x00)
-        self.cmd_ALL(0x01, 0x07, 0x00)
-        self.cmd_ALL(0x06, 0x0D, 0x12, 0x30, 0x20, 0x19, 0x3D, 0x0C)
-        self.cmd_ALL(0x30, 0x08)
-        self.cmd_ALL(0x50, 0x37)
+        self.cs_all(0)               # both controllers receive the setup sequence
+        self.cmd(0x4D, 0x78)
+        self.cmd(0xE0, 0x01)
+        self.cmd(0xE5, 0x08)
+        self.cmd(0xA2, 0x01)
+        self.cmd(0x00, 0x2F, 0x21)
+        self.cmd(0xA2, 0x02)
+        self.cmd(0x00, 0x2F, 0x21)
+        self.cmd(0xA2, 0x00)
+        self.cmd(0x01, 0x07, 0x00)
+        self.cmd(0x06, 0x0D, 0x12, 0x30, 0x20, 0x19, 0x3D, 0x0C)
+        self.cmd(0x30, 0x08)
+        self.cmd(0x50, 0x37)
         # Resolution per controller: 680 x 480
-        self.cmd_ALL(0x61, HALF_WIDTH >> 8, HALF_WIDTH & 0xFF,
+        self.cmd(0x61, HALF_WIDTH >> 8, HALF_WIDTH & 0xFF,
                      EPD_HEIGHT >> 8, EPD_HEIGHT & 0xFF)
-        self.cmd_ALL(0x65, 0x00, 0x00, 0x00, 0x00)
-        self.cmd_ALL(0xE3, 0x88)
-        self.cmd_ALL(0xE9, 0x01)
-        self.cmd_ALL(0xB8, 0xB5)
+        self.cmd(0x65, 0x00, 0x00, 0x00, 0x00)
+        self.cmd(0xE3, 0x88)
+        self.cmd(0xE9, 0x01)
+        self.cmd(0xB8, 0xB5)
         epdconfig.delay_ms(200)
 
-        self.send_command_ALL(0x04)          # power on
+        self.send_command(0x04)          # power on
         epdconfig.delay_ms(500)
-        if not self.ReadBusy():
-            return -1
+        ok = self.ReadBusy()
 
-        if fast:
-            self.cmd_ALL(0xE0, 0x03)
-            self.cmd_ALL(0xE6, 92)
-            self.cmd_ALL(0xA5, 0x00)
-            if not self.ReadBusy():
-                return -1
-        return 0
+        if ok and fast:
+            self.cmd(0xE0, 0x03)
+            self.cmd(0xE6, 92)
+            self.cmd(0xA5, 0x00)
+            ok = self.ReadBusy()
+        self.cs_all(1)
+        return 0 if ok else -1
 
     def TurnOnDisplay(self, timeout_s=60):
-        self.cmd_ALL(0x12, 0x00)
+        self.cs_all(0)
+        self.cmd(0x12, 0x00)
+        self.cs_all(1)
         return self.ReadBusy(timeout_s)
 
     def getbuffer(self, image):
@@ -205,15 +209,15 @@ class EPD:
 
     def display(self, buf):
         m, s = self._split(buf)
-        self._load_M(m)
-        self._load_S(s)
+        self._load(self.cs_m_pin, m)
+        self._load(self.cs_s_pin, s)
         return self.TurnOnDisplay()
 
     def Clear(self, color=0x55):
         """Fill the panel with one color. 0x55 = white (index 1 in every pixel)."""
         payload = bytes([color]) * (HALF_ROW_BYTES * EPD_HEIGHT)
-        self._load_M(payload)
-        self._load_S(payload)
+        self._load(self.cs_m_pin, payload)
+        self._load(self.cs_s_pin, payload)
         return self.TurnOnDisplay()
 
     def sleep(self, exit_module=False):
@@ -221,9 +225,11 @@ class EPD:
 
         The next init() resets the controllers out of deep sleep. Pass
         exit_module=True only on shutdown, to release SPI and drop PWR."""
-        self.cmd_ALL(0x02, 0x00)             # power off
+        self.cs_all(0)
+        self.cmd(0x02, 0x00)             # power off
         epdconfig.delay_ms(100)
-        self.cmd_ALL(0x07, 0xA5)             # deep sleep
+        self.cmd(0x07, 0xA5)             # deep sleep
+        self.cs_all(1)
         epdconfig.delay_ms(100)
         if exit_module:
             epdconfig.module_exit()

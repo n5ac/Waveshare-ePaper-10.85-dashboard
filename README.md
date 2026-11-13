@@ -60,7 +60,7 @@ sudo apt install -y python3-gpiozero python3-lgpio python3-spidev
 
 * **(New)** Included support of Raspberry PI Zero 1.
 
-* **(New)** Support for the 4-color **10.85" e-Paper (G)** panel (`lib/waveshare_epd/epd10in85g.py`). Choose the panel in `main.py`:
+* **(New)** Support for the 4-color **10.85" e-Paper (G)** panel (`lib/waveshare_epd/epd10in85g.py`). The (G) driver talks to the panel through Waveshare's own `DEV_Config` library (`lib/waveshare_epd/epd10in85g_lib/`). The panel ignores commands sent through the kernel SPI driver, because it needs chip select held low across a whole command sequence. Choose the panel in `main.py`:
   ```python
   PANEL_TYPE = 'G'          # 'BW' for the black/white panel, 'G' for the 4-color (G) panel
   REFRESH_INTERVAL_G = 300  # seconds between (G) refreshes
