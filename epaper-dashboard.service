@@ -1,0 +1,32 @@
+# systemd unit: start the e-paper dashboard at boot and restart it if it dies.
+#
+# Install (on the Pi; edit User/paths first if yours differ):
+#   sudo cp epaper-dashboard.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now epaper-dashboard
+#
+# Do any first-time interactive sign-ins (Claude, Strava, Roborock, ...) by
+# running `python3 main.py` by hand first: under systemd there is no keyboard.
+
+[Unit]
+Description=Waveshare 10.85" e-Paper dashboard
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=n5ac
+WorkingDirectory=/home/n5ac/Waveshare-ePaper-10.85-dashboard
+ExecStart=/usr/bin/python3 /home/n5ac/Waveshare-ePaper-10.85-dashboard/main.py
+Environment=PYTHONUNBUFFERED=1
+
+# Stop with SIGINT so main.py's KeyboardInterrupt handler puts the panel into
+# deep sleep cleanly. Give an in-progress (G) refresh (~20 s) time to finish.
+KillSignal=SIGINT
+TimeoutStopSec=60
+
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

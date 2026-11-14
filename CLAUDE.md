@@ -106,4 +106,5 @@ A healthy run logs BUSY released after about 17-20 s on `display`.
 - Use red/yellow for alerts (high AQI, printer error, unread mail) by rendering
   in RGB.
 - `PANEL_ROTATE_180` option if the enclosure mounts the panel inverted.
-- Consider a systemd service instead of running in tmux.
+- systemd service: `epaper-dashboard.service` (see README). Runs as `n5ac`,
+  stops with SIGINT so the panel deep-sleeps cleanly.

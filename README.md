@@ -162,6 +162,27 @@ To reattach to the session later and view the logs or stop the script:
 tmux attach -t dashboard
 ```
 
+### Start at boot (systemd)
+
+`epaper-dashboard.service` runs the dashboard at boot and restarts it if it exits. It assumes user `n5ac` and `/home/n5ac/Waveshare-ePaper-10.85-dashboard`; edit `User=`, `WorkingDirectory=` and `ExecStart=` if yours differ.
+
+Do any first-time interactive sign-ins (Claude, Strava, Roborock) by running `python3 main.py` by hand first; a service has no keyboard. Stop any copy running in tmux (`pkill -f main.py`) so two instances don't drive the panel. Then:
+```shell
+sudo cp epaper-dashboard.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now epaper-dashboard
+```
+
+| Task | Command |
+|---|---|
+| Status | `systemctl status epaper-dashboard` |
+| Live output | `journalctl -u epaper-dashboard -f` |
+| Restart (e.g. after `git pull`) | `sudo systemctl restart epaper-dashboard` |
+| Stop / start | `sudo systemctl stop epaper-dashboard` / `start` |
+| Don't start at boot | `sudo systemctl disable epaper-dashboard` |
+
+Stopping sends SIGINT, so the panel is put into deep sleep cleanly.
+
 ## How It Works
 
 The dashboard is built on a robust, multi-threaded architecture designed to keep the UI responsive and prevent hardware lockups.
