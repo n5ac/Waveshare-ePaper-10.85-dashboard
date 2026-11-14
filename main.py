@@ -282,9 +282,11 @@ data_store = DataStore()
 
 # --- HELPERS ---
 def ping_printer(ip):
+    # Three probes, reachable if any answers: one lost packet (Wi-Fi power
+    # save, a busy printer) must not flip the widget to OFFLINE.
     try:
         result = subprocess.run(
-            ['ping', '-c', '1', '-W', '1', ip],
+            ['ping', '-c', '3', '-i', '0.3', '-W', '1', ip],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
@@ -617,6 +619,7 @@ def update_data_thread():
             global_printer = None
 
     is_connected = False
+    printer_problem = None  # last logged reason the printer is offline
 
     while True:
         now = time.time()
@@ -662,6 +665,7 @@ def update_data_thread():
                 update_interval = 5 if is_connected else 15
                 if now - data_store.last_update['printer'] > update_interval:
                     is_alive = ping_printer(PRINTER_CONF['IP'])
+                    problem = None
                     if is_alive:
                         try:
                             if not is_connected and global_printer:
@@ -678,7 +682,10 @@ def update_data_thread():
                                             'remaining_time': global_printer.get_time(),
                                             'layers': f"{global_printer.current_layer_num()}/{global_printer.total_layer_num()}"
                                         }
+                            if global_printer is None:
+                                problem = "printer client not created (see 'Bambu init error' above)"
                         except Exception as e:
+                            problem = f"connect/state error: {e!r}"
                             is_connected = False
                             with data_store.lock:
                                 data_store.printer['status'] = 'OFFLINE'
@@ -687,6 +694,7 @@ def update_data_thread():
                             except:
                                 pass
                     else:
+                        problem = f"no ping reply from {PRINTER_CONF['IP']}"
                         if is_connected:
                             is_connected = False
                             try:
@@ -695,6 +703,12 @@ def update_data_thread():
                                 pass
                         with data_store.lock:
                             data_store.printer['status'] = 'OFFLINE'
+                    if problem != printer_problem:
+                        if problem:
+                            logging.warning(f"Printer OFFLINE: {problem}")
+                        else:
+                            logging.info("Printer reachable again")
+                        printer_problem = problem
                     data_store.last_update['printer'] = now
             else:
                 if now - data_store.last_update['crypto'] > 600:
@@ -720,9 +734,14 @@ def update_data_thread():
                     # A failed ping is recorded as None (shown as "no reply"), not
                     # 0 ms, so an outage can't pass for a perfect connection.
                     try:
-                        out = subprocess.check_output(['ping', '-c', '1', '-W', '2', '8.8.8.8'],
-                                                      stderr=subprocess.STDOUT, timeout=5).decode('utf-8')
-                        ms = round(float(out.split('time=')[1].split(' ms')[0]))
+                        # Three probes; "no reply" only if all are lost. Report
+                        # the median so one stray packet doesn't decide the color.
+                        out = subprocess.check_output(['ping', '-c', '3', '-i', '0.3', '-W', '2', '8.8.8.8'],
+                                                      stderr=subprocess.STDOUT, timeout=10).decode('utf-8')
+                        times = sorted(float(t.split(' ')[0]) for t in out.split('time=')[1:])
+                        ms = round(times[len(times) // 2])
+                        if len(times) < 3:
+                            logging.info(f"Ping: {3 - len(times)} of 3 probes lost, median {ms} ms")
                     except subprocess.CalledProcessError as e:
                         logging.warning(f"Ping failed (rc={e.returncode}): {e.output.decode('utf-8', 'replace').strip()[-200:]}")
                         ms = None
@@ -921,16 +940,14 @@ def format_pressure(hpa):
     return f"{hpa} hPa"
 
 
-# Internet ping colors on the (G) panel: yellow above 50 ms, red above 100 ms
-# or when the ping fails.
-PING_WARN_MS = 50
-PING_CRIT_MS = 100
+# Internet ping color on the (G) panel: red above 50 ms or when the ping
+# fails, black otherwise. Applies to each history bar and the current text.
+PING_BAD_MS = 50
 
 
 def ping_color(ms):
-    """Return 'red', 'yellow' or None (stay black) for a ping result (None = failed)."""
-    if ms is None or ms > PING_CRIT_MS: return 'red'
-    if ms > PING_WARN_MS: return 'yellow'
+    """Return 'red' or None (stay black) for a ping result (None = failed)."""
+    if ms is None or ms > PING_BAD_MS: return 'red'
     return None
 
 
