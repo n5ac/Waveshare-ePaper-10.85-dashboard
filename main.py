@@ -1031,6 +1031,42 @@ def usage_bar_color(pct):
     return None
 
 
+# Claude pace check: compare usage with how much of the 7-day window has gone by.
+# "Even pace" = elapsed fraction of the window (day 3 of 7 -> 42.9 %).
+# Yellow when usage > 80 % of even pace, red when > 90 % of even pace.
+CLAUDE_WINDOW_S = 7 * 24 * 3600
+PACE_WARN_FRAC = 0.80
+PACE_CRIT_FRAC = 0.90
+
+
+def window_elapsed_pct(resets_at, window_s=CLAUDE_WINDOW_S):
+    """Percent of the usage window elapsed (0-100), or None if unknown."""
+    if not resets_at:
+        return None
+    try:
+        reset = datetime.fromisoformat(resets_at.replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return None
+    left = (reset - datetime.now(timezone.utc)).total_seconds()
+    return max(0.0, min(100.0, 100.0 * (window_s - left) / window_s))
+
+
+def usage_pace_color(pct, elapsed_pct):
+    """'red' / 'yellow' / None: usage measured against even pace for the window.
+
+    Falls back to the absolute 75/90 % thresholds when the reset time is unknown.
+    """
+    try:
+        pct = float(pct)
+    except (TypeError, ValueError):
+        return None
+    if elapsed_pct is None:
+        return usage_bar_color(pct)
+    if pct >= 100 or pct > PACE_CRIT_FRAC * elapsed_pct: return 'red'
+    if pct > PACE_WARN_FRAC * elapsed_pct: return 'yellow'
+    return None
+
+
 def format_pressure(hpa):
     """Format a pressure reading (Open-Meteo returns hPa) in PRESSURE_UNIT."""
     if PRESSURE_UNIT == 'mmHg':
@@ -1468,13 +1504,35 @@ def render_screen(epd, fonts):
 
             draw.text((col3_x, sp_y + 45), f"7-Day Limit: {round(pct_7d)}% (Resets in {rem_7d})", font=fonts['20'], fill=0)
             bx, bw, bh = col3_x, 400, 25
-            draw.rectangle((bx, sp_y + 80, bx + bw, sp_y + 80 + bh), outline=0, width=2)
-            fill_w = int((bw - 4) * min(pct_7d / 100.0, 1.0))
+            by = sp_y + 80
+            draw.rectangle((bx, by, bx + bw, by + bh), outline=0, width=2)
+            inner_w = bw - 4
+            fill_w = int(inner_w * min(pct_7d / 100.0, 1.0))
+            elapsed = window_elapsed_pct(resets_7d)
+            color = usage_pace_color(pct_7d, elapsed)
             if fill_w > 0:
-                rect = (bx + 2, sp_y + 82, bx + 2 + fill_w, sp_y + 80 + bh - 2)
+                rect = (bx + 2, by + 2, bx + 2 + fill_w, by + bh - 2)
                 draw.rectangle(rect, fill=0)
-                color = usage_bar_color(pct_7d)
                 if color: color_overlays.append(('rect', rect, color))
+
+            if elapsed is not None:
+                # Pace marker: where usage would be at an even burn rate. A
+                # 3 px line through the bar (white over the fill so it shows),
+                # with a pointer and label underneath.
+                mx = bx + 2 + int(inner_w * elapsed / 100.0)
+                mx = max(bx + 3, min(mx, bx + bw - 3))
+                line = (mx - 1, by - 5, mx + 1, by + bh + 2)
+                draw.rectangle(line, fill=0)
+                if fill_w > 0 and mx - 1 <= bx + 2 + fill_w:
+                    inner = (mx - 1, by + 2, mx + 1, by + bh - 2)
+                    draw.rectangle(inner, fill=255)
+                    color_overlays.append(('rect', inner, 'white'))
+                ty = by + bh + 3
+                draw.polygon([(mx, ty), (mx - 6, ty + 9), (mx + 6, ty + 9)], fill=0)
+                label = f"Even pace {round(elapsed)}%"
+                lw = text_width(fonts['20'], label)
+                lx = mx + 12 if mx + 12 + lw <= bx + bw + 20 else mx - 12 - lw
+                draw.text((lx, ty - 4), label, font=fonts['20'], fill=0)
 
     elif ENABLE_SPOTIFY:
         if spotify['cover']:
