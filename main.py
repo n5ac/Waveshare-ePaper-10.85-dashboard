@@ -68,6 +68,16 @@ TEMP_UNIT = 'F'          # 'F' (Fahrenheit) or 'C' (Celsius)
 PRESSURE_UNIT = 'mmHg'   # 'mmHg', 'inHg' or 'hPa'
 WIND_UNIT = 'mph'        # 'mph', 'kmh', 'kn' (knots) or 'ms' (m/s)
 WIND_UNIT_LABELS = {'mph': 'mph', 'kmh': 'km/h', 'kn': 'kn', 'ms': 'm/s'}
+RAIN_UNIT = 'in'         # 'in' or 'mm' (also picks mi or km for lightning distance)
+
+# --- TEMPEST WEATHER STATION ---
+# Listens for the Tempest hub's local UDP broadcasts (no token or internet
+# needed; the hub must be on the same network as the Pi). While data is fresh,
+# wind, humidity and UV come from the Tempest instead of Open-Meteo, and rain
+# and lightning are shown next to the AQI.
+ENABLE_TEMPEST = True
+TEMPEST_UDP_PORT = 50222
+TEMPEST_STALE_S = 300    # ignore Tempest data older than this
 
 # --- API ENDPOINTS ---
 API_ENDPOINTS = {
@@ -266,13 +276,13 @@ class DataStore:
             'status': 'OFFLINE', 'battery': 0, 'is_cleaning': False,
             'current_area': 0.0, 'ref_area': 0.0, 'pct': 0.0, 'last_date': '-'
         }
-        self.sysload = {'cpu': 0, 'ram_free': 0, 'history': deque(maxlen=30)}
+        self.tempest = {'obs_time': 0}
         self.crypto = {'btc': 0, 'eth': 0, 'btc_hist': [], 'eth_hist': []}
         self.ping = {'current': None, 'history': deque(maxlen=50)}
 
         self.last_update = {
             'weather': 0, 'strava': 0, 'printer': 0, 'gmail': 0,
-            'spotify': 0, 'crypto': 0, 'sysload': 0, 'ping': 0,
+            'spotify': 0, 'crypto': 0, 'ping': 0,
             'claude': 0, 'antigravity': 0, 'codex': 0
         }
 
@@ -626,7 +636,7 @@ def update_data_thread():
         try:
 
             if now - data_store.last_update['weather'] > 600:
-                weather_url = f"{API_ENDPOINTS['weather']}?latitude={LOCATION_LAT}&longitude={LOCATION_LON}&current=temperature_2m,relative_humidity_2m,surface_pressure,wind_speed_10m,wind_direction_10m,weather_code,is_day,uv_index&hourly=temperature_2m,precipitation_probability,weather_code,cloud_cover&timezone=auto&forecast_days=2"
+                weather_url = f"{API_ENDPOINTS['weather']}?latitude={LOCATION_LAT}&longitude={LOCATION_LON}&current=temperature_2m,relative_humidity_2m,surface_pressure,wind_speed_10m,wind_direction_10m,weather_code,is_day,uv_index&hourly=temperature_2m,precipitation_probability,weather_code,cloud_cover&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=5"
                 if TEMP_UNIT == 'F':
                     weather_url += "&temperature_unit=fahrenheit"
                 if WIND_UNIT != 'kmh':
@@ -645,21 +655,6 @@ def update_data_thread():
                     if s_data:
                         with data_store.lock: data_store.strava = s_data
                     data_store.last_update['strava'] = now
-            else:
-                if now - data_store.last_update['sysload'] > 30:
-                    try:
-                        with open('/proc/loadavg', 'r') as f:
-                            cpu = float(f.read().split()[0]) * 10
-                        with open('/proc/meminfo', 'r') as f:
-                            lines = f.readlines()
-                            free = int(lines[1].split()[1]) // 1024
-                        with data_store.lock:
-                            data_store.sysload['cpu'] = min(int(cpu), 100)
-                            data_store.sysload['ram_free'] = free
-                            data_store.sysload['history'].append(min(int(cpu), 100))
-                    except:
-                        pass
-                    data_store.last_update['sysload'] = now
 
             if ENABLE_BAMBU:
                 update_interval = 5 if is_connected else 15
@@ -892,6 +887,104 @@ def update_data_thread():
         time.sleep(1)
 
 
+# --- TEMPEST UDP LISTENER ---
+def tempest_listener_thread():
+    """Receive the Tempest hub's UDP broadcasts on the LAN.
+
+    obs_st (every minute) carries wind, humidity, UV, rain over the last
+    minute and lightning strikes in the last minute; the last hour of rain and
+    strikes is summed here (so it restarts when the dashboard restarts).
+    evt_strike gives the distance of each strike, evt_precip the start of rain.
+    Units on the wire: m/s, %, mm, km.
+    """
+    rain_log = deque()    # (received time, mm in that minute)
+    strike_log = deque()  # (received time, strikes in that minute)
+    while True:
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(('', TEMPEST_UDP_PORT))
+            sock.settimeout(180)
+            logging.info(f"Tempest: listening for hub broadcasts on UDP {TEMPEST_UDP_PORT}")
+            silent = False
+            while True:
+                try:
+                    data, _ = sock.recvfrom(4096)
+                except socket.timeout:
+                    if not silent:
+                        logging.warning("Tempest: no broadcast for 3 min (hub off, or on another network?)")
+                        silent = True
+                    continue
+                try:
+                    msg = json.loads(data)
+                except ValueError:
+                    continue
+                now = time.time()
+                mtype = msg.get('type')
+
+                if mtype == 'obs_st' and msg.get('obs'):
+                    if silent:
+                        logging.info("Tempest: receiving again")
+                        silent = False
+                    ob = msg['obs'][0]
+                    val = lambda i: ob[i] if len(ob) > i else None
+                    rain_mm = val(12) or 0
+                    strikes = val(15) or 0
+                    rain_log.append((now, rain_mm))
+                    strike_log.append((now, strikes))
+                    while rain_log and rain_log[0][0] < now - 3600: rain_log.popleft()
+                    while strike_log and strike_log[0][0] < now - 3600: strike_log.popleft()
+                    with data_store.lock:
+                        t = data_store.tempest
+                        t.update({
+                            'obs_time': now,
+                            'wind_avg': val(2), 'wind_gust': val(3), 'wind_dir': val(4),
+                            'humidity': val(8), 'uv': val(10),
+                            'rain_min_mm': rain_mm, 'precip_type': val(13) or 0,
+                            'rain_1h_mm': sum(r for _, r in rain_log),
+                            'strikes_1h': sum(c for _, c in strike_log),
+                        })
+                        # evt_strike is more precise; fall back to the obs average.
+                        if strikes and val(14) and now - t.get('last_strike_time', 0) > 120:
+                            t['last_strike_time'] = now
+                            t['last_strike_km'] = val(14)
+
+                elif mtype == 'evt_strike' and msg.get('evt'):
+                    with data_store.lock:
+                        data_store.tempest['last_strike_time'] = now
+                        data_store.tempest['last_strike_km'] = msg['evt'][1]
+
+                elif mtype == 'evt_precip':
+                    with data_store.lock:
+                        data_store.tempest['rain_start'] = now
+        except Exception:
+            logging.exception("Tempest listener error")
+            time.sleep(30)
+        finally:
+            if sock is not None:
+                try: sock.close()
+                except Exception: pass
+
+
+def tempest_is_raining(t, now):
+    return bool(t.get('rain_min_mm') or t.get('precip_type')
+                or now - t.get('rain_start', 0) < 180)
+
+
+def convert_wind(ms):
+    """m/s (Tempest) -> WIND_UNIT."""
+    return ms * {'mph': 2.23694, 'kmh': 3.6, 'kn': 1.94384}.get(WIND_UNIT, 1.0)
+
+
+def format_rain(mm):
+    return f"{mm / 25.4:.2f} in" if RAIN_UNIT == 'in' else f"{mm:.1f} mm"
+
+
+def format_distance(km):
+    return f"{km * 0.621371:.0f} mi" if RAIN_UNIT == 'in' else f"{km:.0f} km"
+
+
 # --- GRAPHICS FUNCTIONS ---
 def draw_icon(draw, x, y, name, size=(40, 40), is_white=False):
     icon = get_cached_icon(name, size, is_white)
@@ -990,6 +1083,10 @@ def fit_font(fonts, text, max_width, sizes=('35', '32', '28', '24', '20')):
     return sizes[-1], fonts[sizes[-1]]
 
 
+def draw_centered(draw, cx, y, text, font, fill=0):
+    draw.text((cx - text_width(font, text) / 2, y), text, font=font, fill=fill)
+
+
 def get_weather_icon(code, is_day=1):
     if code == 0:
         return "icon_sun" if is_day else "icon_moon"
@@ -1004,7 +1101,7 @@ def get_weather_icon(code, is_day=1):
     elif code in [71, 73, 75, 85, 86]:
         return "icon_snow"
     elif code in [95, 96, 99]:
-        return "icon_lightning"
+        return "icon_cloud-lightning"
     return "icon_sun"
 
 
@@ -1027,7 +1124,7 @@ def render_screen(epd, fonts):
         claude = data_store.claude.copy()
         antigravity = data_store.antigravity.copy()
         codex = data_store.codex.copy()
-        sysload = data_store.sysload.copy()
+        tempest = data_store.tempest.copy()
         crypto = data_store.crypto.copy()
         ping = data_store.ping.copy()
     finally:
@@ -1038,7 +1135,7 @@ def render_screen(epd, fonts):
     # --- COLUMN 1 (Widgets) ---
     col1_x = 20
 
-    # Widget 1: Strava or SysLoad
+    # Widget 1: Strava or 5-day forecast
     y1 = 20
     if ENABLE_STRAVA:
         draw_icon(draw, col1_x, y1, "icon_strava", (60, 60))
@@ -1059,11 +1156,29 @@ def render_screen(epd, fonts):
         draw.text((col1_x + 255, y1 + 90), f"{strava.get('hike_total', 0)} km", font=fonts['20'], fill=0)
 
     else:
-        draw_icon(draw, col1_x, y1, "icon_cpu", (50, 50))
-        draw.text((col1_x + 60, y1), f"SYSTEM LOAD: {sysload['cpu']}%", font=fonts['28'], fill=0)
-        draw.text((col1_x + 60, y1 + 35), f"RAM Free: {sysload['ram_free']} MB", font=fonts['20'], fill=0)
-        draw_sparkline(draw, col1_x + 60, y1 + 60, list(sysload['history']), max_items=30, width=350, height=40,
-                       style="bar")
+        # 5-day forecast: today plus the next four days (Open-Meteo daily).
+        daily = weather.get('daily', {})
+        d_times = daily.get('time', [])
+        d_codes = daily.get('weather_code', [])
+        d_max = daily.get('temperature_2m_max', [])
+        d_min = daily.get('temperature_2m_min', [])
+        n_days = min(5, len(d_times), len(d_codes), len(d_max), len(d_min))
+        if n_days == 0:
+            draw.text((col1_x, y1), "5-DAY FORECAST", font=fonts['28'], fill=0)
+            draw.text((col1_x, y1 + 45), "Waiting for data...", font=fonts['20'], fill=0)
+        slot_w = (col_w - 20 - col1_x) / 5
+        for i in range(n_days):
+            scx = col1_x + i * slot_w + slot_w / 2
+            try:
+                label = "Today" if i == 0 else datetime.strptime(d_times[i], "%Y-%m-%d").strftime("%a")
+            except ValueError:
+                label = d_times[i][5:]
+            draw_centered(draw, scx, 10, label, fonts['20'])
+            draw_icon(draw, int(scx - 22), 36, get_weather_icon(d_codes[i], 1), (44, 44))
+            if d_max[i] is not None:
+                draw_centered(draw, scx, 84, f"{math.floor(d_max[i] + 0.5)}°", fonts['24'])
+            if d_min[i] is not None:
+                draw_centered(draw, scx, 114, f"{math.floor(d_min[i] + 0.5)}°", fonts['20'])
 
     draw.line((col1_x, 150, col_w - 20, 150), fill=0, width=2)
 
@@ -1178,6 +1293,16 @@ def render_screen(epd, fonts):
         is_day = cur.get('is_day', 1)
         uv_index = cur.get('uv_index', 0.0)
 
+        # Prefer the Tempest (local station) while its data is fresh.
+        now_ts = time.time()
+        tp = tempest if (ENABLE_TEMPEST and now_ts - tempest.get('obs_time', 0) < TEMPEST_STALE_S) else None
+        if tp:
+            if tp.get('humidity') is not None: hum = round(tp['humidity'])
+            if tp.get('uv') is not None: uv_index = tp['uv']
+            if tp.get('wind_avg') is not None:
+                wind_spd = round(convert_wind(tp['wind_avg']), 1)
+                wind_dir = tp.get('wind_dir') or 0
+
         temp_rounded = math.floor(temp + 0.5)
 
         draw_icon(draw, col2_x, 20, get_weather_icon(w_code, is_day), (90, 90))
@@ -1245,24 +1370,46 @@ def render_screen(epd, fonts):
         draw.text((cx - tw / 2, cy + 25), spd_text, font=fonts['20'], fill=0)
 
         aqi_x = col2_x + 180
-        draw.text((aqi_x, y_c2 + 10), "AIR QUALITY", font=fonts['20'], fill=0)
-        draw.text((aqi_x, y_c2 + 55), "AQI:", font=fonts['28'], fill=0)
+        if tp:
+            # Compact AQI line, then Tempest rain and lightning.
+            aqi_label = "AQI: "
+            draw.text((aqi_x, y_c2), aqi_label, font=fonts['28'], fill=0)
+            aqi_str = str(aqi)
+            ax = aqi_x + text_width(fonts['28'], aqi_label)
+            if aqi >= 50:
+                draw.rectangle((ax - 4, y_c2 + 2, ax + text_width(fonts['28'], aqi_str) + 4, y_c2 + 34), fill=0)
+                draw.text((ax, y_c2), aqi_str, font=fonts['28'], fill=255)
+            else:
+                draw.text((ax, y_c2), aqi_str, font=fonts['28'], fill=0)
 
-        aqi_str = str(aqi)
-        try:
-            bbox = draw.textbbox((0, 0), aqi_str, font=fonts['80'])
-            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        except AttributeError:
-            tw, th = draw.textsize(aqi_str, font=fonts['80'])
-
-        val_x, val_y = aqi_x + 80, y_c2 + 66
-
-        if aqi >= 50:
-            pad = 20
-            draw.rectangle((val_x - pad, val_y - pad + 15, val_x + tw + pad, val_y + th + pad - 5), fill=0)
-            draw.text((val_x, val_y), aqi_str, font=fonts['80'], fill=255)
+            draw.text((aqi_x, y_c2 + 42), f"Rain 1h: {format_rain(tp.get('rain_1h_mm', 0))}", font=fonts['20'], fill=0)
+            draw.text((aqi_x, y_c2 + 67), "RAINING" if tempest_is_raining(tp, now_ts) else "Not raining",
+                      font=fonts['20'], fill=0)
+            draw.text((aqi_x, y_c2 + 97), f"Strikes 1h: {tp.get('strikes_1h', 0)}", font=fonts['20'], fill=0)
+            last_t = tp.get('last_strike_time', 0)
+            if now_ts - last_t < 3 * 3600 and tp.get('last_strike_km') is not None:
+                draw.text((aqi_x, y_c2 + 122),
+                          f"Last: {format_distance(tp['last_strike_km'])}, {datetime.fromtimestamp(last_t):%H:%M}",
+                          font=fonts['20'], fill=0)
         else:
-            draw.text((val_x, val_y), aqi_str, font=fonts['80'], fill=0)
+            draw.text((aqi_x, y_c2 + 10), "AIR QUALITY", font=fonts['20'], fill=0)
+            draw.text((aqi_x, y_c2 + 55), "AQI:", font=fonts['28'], fill=0)
+
+            aqi_str = str(aqi)
+            try:
+                bbox = draw.textbbox((0, 0), aqi_str, font=fonts['80'])
+                tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            except AttributeError:
+                tw, th = draw.textsize(aqi_str, font=fonts['80'])
+
+            val_x, val_y = aqi_x + 80, y_c2 + 66
+
+            if aqi >= 50:
+                pad = 20
+                draw.rectangle((val_x - pad, val_y - pad + 15, val_x + tw + pad, val_y + th + pad - 5), fill=0)
+                draw.text((val_x, val_y), aqi_str, font=fonts['80'], fill=255)
+            else:
+                draw.text((val_x, val_y), aqi_str, font=fonts['80'], fill=0)
 
         draw.line((col2_x, 320, col2_x + col_w - 40, 320), fill=0, width=2)
 
@@ -1319,7 +1466,7 @@ def render_screen(epd, fonts):
             resets_7d = claude.get('seven_day', {}).get('resets_at')
             rem_7d = time_until(resets_7d)
 
-            draw.text((col3_x, sp_y + 45), f"7-Day Limit: {pct_7d}% (Resets in {rem_7d})", font=fonts['20'], fill=0)
+            draw.text((col3_x, sp_y + 45), f"7-Day Limit: {round(pct_7d)}% (Resets in {rem_7d})", font=fonts['20'], fill=0)
             bx, bw, bh = col3_x, 400, 25
             draw.rectangle((bx, sp_y + 80, bx + bw, sp_y + 80 + bh), outline=0, width=2)
             fill_w = int((bw - 4) * min(pct_7d / 100.0, 1.0))
@@ -1453,6 +1600,11 @@ def main():
         t_data = threading.Thread(target=update_data_thread)
         t_data.daemon = True
         t_data.start()
+
+        if ENABLE_TEMPEST:
+            t_tempest = threading.Thread(target=tempest_listener_thread)
+            t_tempest.daemon = True
+            t_tempest.start()
 
         if ENABLE_ROBOROCK:
             t_robo = threading.Thread(target=roborock_update_thread, args=(roborock_user_data, ROBOROCK_CONF['EMAIL']))

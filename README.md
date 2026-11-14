@@ -116,6 +116,11 @@ Since the official Spotify API requires running a local web server for complex t
    
 **After configuration, you no longer need to use the Last.fm service, and a paid Last.fm account is not required. You can continue to use only the Spotify service.**
 
+### Tempest Weather Station
+Set `ENABLE_TEMPEST = True` in `main.py`. Nothing else is needed: the dashboard listens for the Tempest hub's local UDP broadcasts (port 50222), so no API token or internet connection is used. The hub and the Pi must be on the same network (broadcasts don't cross VLANs or subnets).
+
+While Tempest data is fresh (`TEMPEST_STALE_S`, default 5 min), wind, humidity and UV come from the Tempest, and the AQI area also shows rain in the last hour, whether it is raining now, lightning strikes in the last hour and the distance and time of the last strike (within 3 h). Otherwise the widget falls back to Open-Meteo. Rain and strike totals are summed by the dashboard, so they restart when it restarts. `RAIN_UNIT` (`'in'` or `'mm'`) also picks miles or km for the strike distance.
+
 ### Gmail
 The dashboard only *reads* `token.json`; it never starts a sign-in itself. If the file is missing or invalid, the widget shows 0 unread. Create the token once on a computer with a web browser, then copy it to the Pi.
 

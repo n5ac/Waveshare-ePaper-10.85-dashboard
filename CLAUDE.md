@@ -98,6 +98,17 @@ A healthy run logs BUSY released after about 17-20 s on `display`.
 - Stop the dashboard before hardware tests: `pkill -f main.py`.
 - `pinctrl get 17,18,24,25` shows the live pin state (Bookworm).
 
+## Weather sources
+
+- Open-Meteo: temperature, pressure, hourly and 5-day forecast (column 1,
+  replacing the old system-load widget), AQI.
+- Tempest (`ENABLE_TEMPEST`): local UDP broadcasts on port 50222, parsed by
+  `tempest_listener_thread`. obs_st indexes: 2 wind avg, 4 dir, 8 RH, 10 UV,
+  12 rain mm/min, 13 precip type, 14/15 strike dist/count. Overrides wind,
+  humidity and UV while fresh; rain and lightning totals are rolling 1 h sums.
+- bambulabs_api is vendored in `lib/`; use `mqtt_start()`, not `connect()`
+  (which also streams the camera and saturated the Pi's Wi-Fi).
+
 ## Open items / ideas
 
 - The clock shows the time of the last refresh (up to 5 min stale). Options:
