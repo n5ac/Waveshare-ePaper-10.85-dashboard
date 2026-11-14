@@ -669,7 +669,14 @@ def update_data_thread():
                     if is_alive:
                         try:
                             if not is_connected and global_printer:
-                                global_printer.connect()
+                                # MQTT status only. Printer.connect() would also start
+                                # the camera stream (continuous video over TLS), which
+                                # the dashboard never uses and which saturates the Pi
+                                # Zero's Wi-Fi: pings climbed past 1.5 s while printing.
+                                if hasattr(global_printer, 'mqtt_start'):
+                                    global_printer.mqtt_start()
+                                else:
+                                    global_printer.connect()
                                 time.sleep(1)
                                 is_connected = True
                             if global_printer:
