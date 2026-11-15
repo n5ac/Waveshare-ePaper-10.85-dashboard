@@ -62,6 +62,11 @@ ENABLE_SPOTIFY = False
 PANEL_TYPE = 'G'
 REFRESH_INTERVAL_BW = 60
 REFRESH_INTERVAL_G = 300
+# (G) panel: also refresh as soon as the Spotify track changes, but never sooner
+# than SPOTIFY_MIN_GAP_S after the previous refresh (Waveshare recommends >= 180 s
+# between refreshes on the color panels). Any refresh restarts the 300 s timer.
+SPOTIFY_REFRESH_ON_CHANGE = True
+SPOTIFY_MIN_GAP_S = 180
 
 # --- WEATHER UNITS ---
 TEMP_UNIT = 'F'          # 'F' (Fahrenheit) or 'C' (Celsius)
@@ -1321,6 +1326,15 @@ def clock_color(dt, weather):
     return None
 
 
+def spotify_track_key():
+    """(artist, track) currently known, or None when Spotify isn't connected."""
+    with data_store.lock:
+        sp = dict(data_store.spotify)
+    if not spotify_connected(sp, time.time()) or not (sp.get('artist') or sp.get('track')):
+        return None
+    return (sp.get('artist'), sp.get('track'))
+
+
 def draw_clock(draw, box, text, font, overlays, color=None, outline=0):
     """Draw the time centered in box (x0, y0, x1, y1) with fixed-width digit
     cells, so it doesn't shift sideways as proportional digits change. A space
@@ -1933,6 +1947,7 @@ def main():
 
         while True:
             start_time = time.time()
+            shown_track = spotify_track_key()
             try:
                 # CPU-bound rendering runs OUTSIDE the hardware watchdog: on a
                 # Pi Zero 1 it can be slow, but it never hangs, so a slow render
@@ -1993,9 +2008,19 @@ def main():
                 signal.alarm(0)
                 logging.error(f"Unexpected error in main: {e}")
 
-            elapsed = time.time() - start_time
-            sleep_time = max(5, refresh_interval - elapsed)
-            time.sleep(sleep_time)
+            # Wait for the next frame: the regular interval, or (G panel) a new
+            # Spotify track once SPOTIFY_MIN_GAP_S has passed. The interval
+            # always counts from the last refresh, so a track-change refresh
+            # pushes the next regular one out instead of following right after.
+            next_due = start_time + max(refresh_interval, 5 + (time.time() - start_time))
+            watch_track = PANEL_TYPE == 'G' and ENABLE_SPOTIFY and SPOTIFY_REFRESH_ON_CHANGE
+            while time.time() < next_due:
+                time.sleep(2)
+                if watch_track and time.time() - start_time >= SPOTIFY_MIN_GAP_S:
+                    track = spotify_track_key()
+                    if track is not None and track != shown_track:
+                        logging.info(f"Spotify track changed: {track[0]} - {track[1]}; refreshing early")
+                        break
 
     except KeyboardInterrupt:
         try:
