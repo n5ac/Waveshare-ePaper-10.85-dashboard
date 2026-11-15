@@ -1299,6 +1299,7 @@ def draw_centered(draw, cx, y, text, font, fill=0):
 # sunset (TWILIGHT_HALF_MIN either side), red in daylight, black at night.
 CLOCK_DAYLIGHT_COLORS = True
 TWILIGHT_HALF_MIN = 30
+CLOCK_YELLOW_OUTLINE_PX = 2  # black border inside yellow digits (yellow is faint); 0 = none
 
 
 def clock_color(dt, weather):
@@ -1342,7 +1343,9 @@ def render_screen(epd, fonts):
     Himage = Image.new('1', (epd.width, epd.height), 255)
     draw = ImageDraw.Draw(Himage)
     # Painted in color after the 1-bit render (G panel only):
-    #   ('rect', rect, color), ('text', xy, text, font, color) or ('image', xy, rgb_image)
+    #   ('rect', rect, color), ('text', xy, text, font, color[, outline_px]) or ('image', xy, rgb_image)
+    # Text is recolored through a 1-bit mask of the glyphs (no anti-aliased edges);
+    # outline_px leaves a black border of that width inside each stroke.
     color_overlays = []
 
     if not data_store.lock.acquire(timeout=2.0): return Himage
@@ -1698,7 +1701,8 @@ def render_screen(epd, fonts):
     if CLOCK_DAYLIGHT_COLORS:
         ccolor = clock_color(dt, weather)
         if ccolor:
-            color_overlays.append(('text', (col3_x, 10), dt.strftime("%H:%M"), fonts['clock'], ccolor))
+            color_overlays.append(('text', (col3_x, 10), dt.strftime("%H:%M"), fonts['clock'], ccolor,
+                                   CLOCK_YELLOW_OUTLINE_PX if ccolor == 'yellow' else 0))
 
     date_str = dt.strftime("%d %B %Y")
     day_str = dt.strftime("%a").upper()
@@ -1807,8 +1811,15 @@ def render_screen(epd, fonts):
                 _, xy, img = item
                 Himage.paste(img, xy)
             else:
-                _, xy, text, font, color = item
-                cdraw.text(xy, text, font=font, fill=color)
+                _, xy, text, font, color = item[:5]
+                outline = item[5] if len(item) > 5 else 0
+                # Mode '1' text is not anti-aliased, so the mask matches the
+                # black glyphs already drawn exactly (no dark edge slivers).
+                mask = Image.new('1', Himage.size, 0)
+                ImageDraw.Draw(mask).text(xy, text, font=font, fill=1)
+                if outline:
+                    mask = mask.convert('L').filter(ImageFilter.MinFilter(2 * outline + 1)).convert('1')
+                Himage.paste(color, mask=mask)
 
     return Himage
 
