@@ -111,6 +111,10 @@ LASTFM_CONF = {
     'USERNAME': 'your_name'
 }
 
+# Spotify: if spotify_token.json exists (made by spotify_auth.py), the Spotify
+# Web API is used directly; otherwise Last.fm (LASTFM_CONF) if configured.
+SPOTIFY_TOKEN_FILE = os.path.join(BASE_DIR, 'spotify_token.json')
+
 STRAVA_CONF = {
     'TOKEN_FILE': os.path.join(BASE_DIR, 'strava_token.json')
 }
@@ -269,7 +273,10 @@ class DataStore:
         }
         self.printer = {'status': 'OFFLINE'}
         self.gmail_unread = 0
-        self.spotify = {'status': 'PAUSED', 'text': '', 'cover': None}
+        # ok_time: last good Spotify/Last.fm reply. While recent, Spotify replaces the
+        # Internet Quality widget.
+        self.spotify = {'status': 'PAUSED', 'artist': '', 'track': '', 'cover': None,
+                        'cover_url': '', 'ok_time': 0}
         self.claude = {'error': False, 'seven_day': {}}
         self.antigravity = {'error': False, 'models': []}
         self.codex = {'error': False, 'five_hour': {}, 'seven_day': {}}
@@ -846,38 +853,30 @@ def update_data_thread():
                 data_store.last_update['antigravity'] = now
 
             if ENABLE_SPOTIFY and now - data_store.last_update['spotify'] > 20:
-                url = f"{API_ENDPOINTS['lastfm']}?method=user.getrecenttracks&user={LASTFM_CONF['USERNAME']}&api_key={LASTFM_CONF['API_KEY']}&format=json&limit=2&rnd={int(now)}"
-                s_data = net.get_json(url, timeout=5)
-                if s_data:
-                    try:
-                        tracks = s_data.get('recenttracks', {}).get('track', [])
-                        if isinstance(tracks, dict): tracks = [tracks]
-                        if tracks:
-                            current_track = tracks[0]
-                            is_playing = current_track.get('@attr', {}).get('nowplaying') == 'true'
-                            if is_playing:
-                                track_name = current_track.get('name', 'Unknown')
-                                artist = current_track.get('artist', {}).get('#text', 'Unknown')
-                                img_url = ""
-                                for img in current_track.get('image', []):
-                                    if img.get('size') == 'extralarge': img_url = img.get('#text', '')
-                                cover_dithered = None
-                                if img_url:
-                                    img_bytes = net.get_image(img_url)
-                                    if img_bytes:
-                                        img_pil = Image.open(io.BytesIO(img_bytes)).convert("L").resize((120, 120))
-                                        enhancer = ImageEnhance.Contrast(img_pil)
-                                        img_pil = enhancer.enhance(3.0)
-                                        cover_dithered = img_pil.convert("1", dither=Image.NONE)
-                                with data_store.lock:
-                                    data_store.spotify = {'status': 'PLAYING', 'text': f"{artist} - {track_name}",
-                                                          'cover': cover_dithered}
-                            else:
-                                with data_store.lock:
-                                    data_store.spotify = {'status': 'PAUSED', 'text': '', 'cover': None}
-                    except:
-                        pass
                 data_store.last_update['spotify'] = now
+                try:
+                    if os.path.exists(SPOTIFY_TOKEN_FILE):
+                        info = poll_spotify_api()
+                    elif lastfm_configured():
+                        info = poll_lastfm()
+                    else:
+                        info = None
+                    if info is not None:
+                        upd = {'ok_time': now, 'status': info['status'],
+                               'artist': info['artist'], 'track': info['track']}
+                        # Download the cover only when it changes.
+                        if info['img_url'] != data_store.spotify.get('cover_url'):
+                            cover = None
+                            img_bytes = net.get_image(info['img_url']) if info['img_url'] else None
+                            if img_bytes:
+                                img_pil = Image.open(io.BytesIO(img_bytes)).convert("L").resize((120, 120))
+                                img_pil = ImageEnhance.Contrast(img_pil).enhance(3.0)
+                                cover = img_pil.convert("1", dither=Image.NONE)
+                            upd.update({'cover': cover, 'cover_url': info['img_url']})
+                        with data_store.lock:
+                            data_store.spotify.update(upd)
+                except Exception:
+                    logging.exception("Spotify update error")
         except Exception:
             # Never let one failing source kill the thread: every widget
             # (ping included) would silently freeze at its last value.
@@ -1135,6 +1134,121 @@ def draw_ping_bars(draw, x, y, data, overlays, max_items=50, width=400, height=4
         if color and bh > 0: overlays.append(('rect', rect, color))
 
 
+_spotify_tok = {}
+
+
+def spotify_access_token():
+    """Return a valid Spotify access token, refreshing (and saving) as needed."""
+    global _spotify_tok
+    if not _spotify_tok:
+        with open(SPOTIFY_TOKEN_FILE) as f:
+            _spotify_tok = json.load(f)
+    if time.time() < _spotify_tok.get('expires_at', 0):
+        return _spotify_tok['access_token']
+    resp = requests.post('https://accounts.spotify.com/api/token', timeout=10,
+                         auth=(_spotify_tok['client_id'], _spotify_tok['client_secret']),
+                         data={'grant_type': 'refresh_token',
+                               'refresh_token': _spotify_tok['refresh_token']})
+    if resp.status_code != 200:
+        logging.warning(f"Spotify: token refresh failed ({resp.status_code}): {resp.text[:200]}")
+        return None
+    tok = resp.json()
+    _spotify_tok['access_token'] = tok['access_token']
+    _spotify_tok['expires_at'] = time.time() + tok.get('expires_in', 3600) - 60
+    if tok.get('refresh_token'):  # Spotify may rotate it
+        _spotify_tok['refresh_token'] = tok['refresh_token']
+    tmp = SPOTIFY_TOKEN_FILE + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(_spotify_tok, f, indent=2)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, SPOTIFY_TOKEN_FILE)
+    return _spotify_tok['access_token']
+
+
+def _spotify_track_info(item, playing):
+    """Normalize a Spotify track/episode object for the widget."""
+    if item.get('type') == 'episode':
+        artist = item.get('show', {}).get('name', '')
+        images = item.get('images') or item.get('show', {}).get('images', [])
+    else:
+        artist = ', '.join(a.get('name', '') for a in item.get('artists', []))
+        images = item.get('album', {}).get('images', [])
+    # Smallest image that is still at least 120 px (Spotify lists largest first).
+    big_enough = [i for i in images if (i.get('width') or 0) >= 120]
+    img_url = (big_enough[-1] if big_enough else images[0])['url'] if images else ''
+    return {'status': 'PLAYING' if playing else 'PAUSED', 'artist': artist,
+            'track': item.get('name', ''), 'img_url': img_url}
+
+
+def poll_spotify_api():
+    """Now playing (or last played) from the Spotify Web API; None on failure."""
+    token = spotify_access_token()
+    if not token:
+        return None
+    hdr = {'Authorization': f'Bearer {token}'}
+    r = requests.get('https://api.spotify.com/v1/me/player/currently-playing', headers=hdr,
+                     params={'additional_types': 'track,episode'}, timeout=10)
+    if r.status_code == 200 and r.content:
+        cur = r.json()
+        if cur.get('item'):
+            return _spotify_track_info(cur['item'], cur.get('is_playing', False))
+    elif r.status_code not in (200, 204):
+        logging.warning(f"Spotify: currently-playing HTTP {r.status_code}: {r.text[:200]}")
+        if r.status_code == 401:
+            _spotify_tok['expires_at'] = 0  # force a refresh next time
+        return None
+    # Nothing playing: show the last played track.
+    r = requests.get('https://api.spotify.com/v1/me/player/recently-played', headers=hdr,
+                     params={'limit': 1}, timeout=10)
+    if r.status_code != 200:
+        logging.warning(f"Spotify: recently-played HTTP {r.status_code}: {r.text[:200]}")
+        return None
+    items = r.json().get('items', [])
+    if not items:
+        return {'status': 'PAUSED', 'artist': '', 'track': '', 'img_url': ''}
+    return _spotify_track_info(items[0]['track'], False)
+
+
+def poll_lastfm():
+    """Now playing (or last played) from Last.fm; None on failure."""
+    url = f"{API_ENDPOINTS['lastfm']}?method=user.getrecenttracks&user={LASTFM_CONF['USERNAME']}&api_key={LASTFM_CONF['API_KEY']}&format=json&limit=2&rnd={int(time.time())}"
+    s_data = net.get_json(url, timeout=5)
+    if not s_data or 'recenttracks' not in s_data:
+        if s_data and 'error' in s_data:
+            logging.warning(f"Last.fm: {s_data.get('message', s_data['error'])}")
+        return None
+    tracks = s_data['recenttracks'].get('track', [])
+    if isinstance(tracks, dict): tracks = [tracks]
+    if not tracks:
+        return {'status': 'PAUSED', 'artist': '', 'track': '', 'img_url': ''}
+    t0 = tracks[0]
+    return {'status': 'PLAYING' if t0.get('@attr', {}).get('nowplaying') == 'true' else 'PAUSED',
+            'artist': t0.get('artist', {}).get('#text', ''), 'track': t0.get('name', ''),
+            'img_url': next((i.get('#text', '') for i in t0.get('image', [])
+                             if i.get('size') == 'extralarge'), '')}
+
+
+def lastfm_configured():
+    """False while LASTFM_CONF still holds the placeholder values."""
+    return LASTFM_CONF.get('API_KEY') not in ('', '...') and \
+        LASTFM_CONF.get('USERNAME') not in ('', 'your_name')
+
+
+SPOTIFY_STALE_S = 300  # fall back to Internet Quality after 5 min without a reply
+
+
+def spotify_connected(sp, now):
+    return ENABLE_SPOTIFY and now - sp.get('ok_time', 0) < SPOTIFY_STALE_S
+
+
+def ellipsize(text, font, max_width):
+    """Trim text with '...' so it fits max_width."""
+    if text_width(font, text) <= max_width: return text
+    while text and text_width(font, text + '...') > max_width:
+        text = text[:-1]
+    return text.rstrip() + '...'
+
+
 def text_width(font, text):
     try:
         return font.getlength(text)
@@ -1273,7 +1387,7 @@ def render_screen(epd, fonts):
 
     draw.line((col1_x, 320, col_w - 20, 320), fill=0, width=2)
 
-    # Widget 3: Roborock or Ping
+    # Widget 3: Roborock, Antigravity, Codex, Spotify (when connected) or Ping
     y3 = 340
     if ENABLE_ROBOROCK:
         draw_icon(draw, col1_x, y3, "icon_roborock", (50, 50))
@@ -1332,6 +1446,24 @@ def render_screen(epd, fonts):
             fill_w = int((bw - 4) * min(pct_7d / 100.0, 1.0))
             if fill_w > 0:
                 draw.rectangle((bx + 2, y3 + 72, bx + 2 + fill_w, y3 + 70 + bh - 2), fill=0)
+    elif spotify_connected(spotify, time.time()):
+        # Spotify (via Last.fm) takes the Internet Quality slot once connected.
+        if spotify['cover']:
+            Himage.paste(spotify['cover'], (col1_x, y3))
+        else:
+            draw_icon(draw, col1_x, y3, "icon_spotify", (120, 120))
+        tx = col1_x + 135
+        tw_max = col_w - 20 - tx
+        playing = spotify['status'] == 'PLAYING'
+        draw_icon(draw, tx, y3 + 2, "icon_play" if playing else "icon_pause", (24, 24))
+        draw.text((tx + 32, y3), "NOW PLAYING" if playing else "LAST PLAYED", font=fonts['20'], fill=0)
+        if spotify['artist'] or spotify['track']:
+            _, af = fit_font(fonts, spotify['artist'], tw_max, sizes=('28', '24', '20'))
+            draw.text((tx, y3 + 35), ellipsize(spotify['artist'], af, tw_max), font=af, fill=0)
+            _, tf = fit_font(fonts, spotify['track'], tw_max, sizes=('24', '20'))
+            draw.text((tx, y3 + 75), ellipsize(spotify['track'], tf, tw_max), font=tf, fill=0)
+        else:
+            draw.text((tx, y3 + 35), "Nothing played yet", font=fonts['24'], fill=0)
     else:
         draw_icon(draw, col1_x, y3, "icon_wifi", (50, 50))
         if ping['history']:
@@ -1503,7 +1635,7 @@ def render_screen(epd, fonts):
 
     draw.line((col_w * 2, 10, col_w * 2, 470), fill=0, width=2)
 
-    # --- COLUMN 3 (Time, Claude/Spotify/Progress, Gmail) ---
+    # --- COLUMN 3 (Time, Claude/Progress, Gmail) ---
     col3_x = col_w * 2 + 30
     dt = datetime.now()
 
@@ -1518,7 +1650,7 @@ def render_screen(epd, fonts):
 
     draw.line((col3_x, 220, epd.width - 20, 220), fill=0, width=2)
 
-    # 2. Claude AI OR Spotify OR Time Progress
+    # 2. Claude AI OR Time Progress (Spotify is in column 1)
     sp_y = 240
     # Clear background for widget
     draw.rectangle((col3_x, sp_y, col3_x + 420, sp_y + 137), fill=255)
@@ -1565,22 +1697,6 @@ def render_screen(epd, fonts):
                 lw = text_width(fonts['20'], label)
                 lx = mx + 12 if mx + 12 + lw <= bx + bw + 20 else mx - 12 - lw
                 draw.text((lx, ty + 4), label, font=fonts['20'], fill=0)
-
-    elif ENABLE_SPOTIFY:
-        if spotify['cover']:
-            Himage.paste(spotify['cover'], (col3_x, sp_y))
-        else:
-            draw_icon(draw, col3_x, sp_y, "icon_spotify", (120, 120))
-
-        status_ico = "icon_play" if spotify['status'] == 'PLAYING' else "icon_pause"
-        draw_icon(draw, col3_x + 140, sp_y + 10, status_ico, (30, 30))
-
-        if spotify['status'] == 'PLAYING':
-            words = spotify['text'].split(' - ')
-            artist = words[0] if len(words) > 0 else "Unknown"
-            track = words[1] if len(words) > 1 else ""
-            draw.text((col3_x + 180, sp_y + 10), artist[:20], font=fonts['28'], fill=0)
-            draw.text((col3_x + 140, sp_y + 50), track[:25], font=fonts['24'], fill=0)
 
     else:
         # Fallback: Time Progress

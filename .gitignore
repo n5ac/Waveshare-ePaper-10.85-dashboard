@@ -11,3 +11,6 @@ roborock_stats.json
 __pycache__/
 tempest_rain.json
 tempest_rain.json.tmp
+spotify_token.json
+spotify_token.json.tmp
+strava_token.json

@@ -108,13 +108,16 @@ All widget toggles and API configurations are located at the top of the `main.py
 2. Note your printer's **IP Address**, **Serial Number**, and **Access Code**. (Force on your router to map exact IP address)
 3. Update the `PRINTER_CONF` dictionary in the script with these local credentials.
 
-### Spotify (via Last.fm)
-Since the official Spotify API requires running a local web server for complex token renewals, this dashboard uses Last.fm to fetch the current playing track reliably form Spotify. It's is transparent and working method.
-1. Connect your Spotify account to Last.fm.
-2. Create a Last.fm API account to generate an **API Key**.
-3. Update `LASTFM_CONF` in the script with your API Key and Last.fm Username.
-   
-**After configuration, you no longer need to use the Last.fm service, and a paid Last.fm account is not required. You can continue to use only the Spotify service.**
+### Spotify
+Set `ENABLE_SPOTIFY = True`. Once connected, the current track (or the last one played) replaces the Internet Quality widget in the bottom-left. If no answer comes for 5 minutes, Internet Quality comes back.
+
+**Direct (Spotify Web API, preferred):**
+1. At [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard), click **Create app**. Any name and description; Redirect URI exactly `http://127.0.0.1:8888/callback` (Spotify rejects `localhost`); API: tick **Web API** only. Save.
+2. In the app's **Settings**, copy the **Client ID** and **Client secret**.
+3. On a computer with a browser (e.g. the Mac), in this folder: `python3 spotify_auth.py CLIENT_ID CLIENT_SECRET`, then approve in the browser. This writes `spotify_token.json` (gitignored).
+4. Copy it to the Pi, e.g. `scp spotify_token.json n5ac@N5AC-MON:~/Waveshare-ePaper-10.85-dashboard/`, and restart the dashboard. The token renews itself; no further sign-ins.
+
+**Alternative (Last.fm):** if `spotify_token.json` is absent, the dashboard reads now-playing from Last.fm instead. Link Spotify to a Last.fm account, create a Last.fm API key, and put the key and your username in `LASTFM_CONF`.
 
 ### Tempest Weather Station
 Set `ENABLE_TEMPEST = True` in `main.py`. Nothing else is needed: the dashboard listens for the Tempest hub's local UDP broadcasts (port 50222), so no API token or internet connection is used. The hub and the Pi must be on the same network (broadcasts don't cross VLANs or subnets).
