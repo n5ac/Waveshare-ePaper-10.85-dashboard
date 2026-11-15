@@ -1663,8 +1663,12 @@ def render_screen(epd, fonts):
 
             draw.text((aqi_x, y_c2 + 36), f"Rain 1h: {format_rain(tp.get('rain_1h_mm', 0))}", font=fonts['20'], fill=0)
             draw.text((aqi_x, y_c2 + 59), f"Rain 24h: {format_rain(tp.get('rain_24h_mm', 0))}", font=fonts['20'], fill=0)
-            draw.text((aqi_x, y_c2 + 82), "RAINING" if tempest_is_raining(tp, now_ts) else "Not raining",
-                      font=fonts['20'], fill=0)
+            if tempest_is_raining(tp, now_ts):
+                # Aldrich has no bold face: a 1 px stroke thickens it instead.
+                draw.text((aqi_x, y_c2 + 82), "RAINING", font=fonts['20'], fill=0,
+                          stroke_width=1, stroke_fill=0)
+            else:
+                draw.text((aqi_x, y_c2 + 82), "Not raining", font=fonts['20'], fill=0)
             draw.text((aqi_x, y_c2 + 108), f"Strikes 1h: {tp.get('strikes_1h', 0)}", font=fonts['20'], fill=0)
             last_t = tp.get('last_strike_time', 0)
             if now_ts - last_t < 3 * 3600 and tp.get('last_strike_km') is not None:
@@ -1708,7 +1712,7 @@ def render_screen(epd, fonts):
             idx = start_idx + i
             if idx < len(times):
                 off_x = col2_x + (i * 105)
-                draw.text((off_x + 10, 340), f"{times[idx].split('T')[1][:5]}", font=fonts['24'], fill=0)
+                draw_centered(draw, off_x + 45, 340, times[idx].split('T')[1][:5].replace(':', ''), fonts['24'])
                 draw_icon(draw, off_x + 15, 375, get_weather_icon(codes[idx], 1), (60, 60))
                 f_temp = math.floor(temps[idx] + 0.5)
                 draw.text((off_x + 15, 440), f"{f_temp}°{TEMP_UNIT}", font=fonts['24'], fill=0)
