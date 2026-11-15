@@ -1743,7 +1743,7 @@ def render_screen(epd, fonts):
 
     # 1. Time & Date
     ccolor = clock_color(dt, weather) if CLOCK_DAYLIGHT_COLORS else None
-    draw_clock(draw, (col3_x, 10, epd.width - 20, 160), dt.strftime("%H %M"), fonts['clock'],
+    draw_clock(draw, (col3_x, 10, epd.width - 20, 160), dt.strftime("%H%M"), fonts['clock'],
                color_overlays, ccolor, CLOCK_YELLOW_OUTLINE_PX if ccolor == 'yellow' else 0)
 
     date_str = dt.strftime("%d %B %Y")
@@ -1914,7 +1914,7 @@ def main():
             '40': load_font('Aldrich-Regular.ttc', 40),
             '60': load_font('Aldrich-Regular.ttc', 60),
             '80': load_font('Aldrich-Regular.ttc', 80),
-            'clock': load_font('Orbitron-Bold.ttf', 112),  # OFL, see fnt/Orbitron-OFL.txt
+            'clock': load_font('Orbitron-Bold.ttf', 118),  # OFL, see fnt/Orbitron-OFL.txt
         }
 
         t_data = threading.Thread(target=update_data_thread)
