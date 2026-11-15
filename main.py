@@ -645,7 +645,7 @@ def update_data_thread():
         try:
 
             if now - data_store.last_update['weather'] > 600:
-                weather_url = f"{API_ENDPOINTS['weather']}?latitude={LOCATION_LAT}&longitude={LOCATION_LON}&current=temperature_2m,relative_humidity_2m,surface_pressure,wind_speed_10m,wind_direction_10m,weather_code,is_day,uv_index&hourly=temperature_2m,precipitation_probability,weather_code,cloud_cover&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=5"
+                weather_url = f"{API_ENDPOINTS['weather']}?latitude={LOCATION_LAT}&longitude={LOCATION_LON}&current=temperature_2m,relative_humidity_2m,surface_pressure,wind_speed_10m,wind_direction_10m,weather_code,is_day,uv_index&hourly=temperature_2m,precipitation_probability,weather_code,cloud_cover&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset&timezone=auto&forecast_days=5"
                 if TEMP_UNIT == 'F':
                     weather_url += "&temperature_unit=fahrenheit"
                 if WIND_UNIT != 'kmh':
@@ -1295,6 +1295,31 @@ def draw_centered(draw, cx, y, text, font, fill=0):
     draw.text((cx - text_width(font, text) / 2, y), text, font=font, fill=fill)
 
 
+# Clock color on the (G) panel: yellow for about an hour around sunrise and
+# sunset (TWILIGHT_HALF_MIN either side), red in daylight, black at night.
+CLOCK_DAYLIGHT_COLORS = True
+TWILIGHT_HALF_MIN = 30
+
+
+def clock_color(dt, weather):
+    """'yellow' / 'red' / None for local time dt, from Open-Meteo sunrise/sunset."""
+    try:
+        daily = weather['daily']
+        i = daily['time'].index(dt.strftime('%Y-%m-%d'))
+        rise = datetime.fromisoformat(daily['sunrise'][i])
+        sset = datetime.fromisoformat(daily['sunset'][i])
+    except (KeyError, ValueError, IndexError, TypeError):
+        # No sunrise/sunset yet: day/night from current conditions only.
+        return 'red' if weather.get('current', {}).get('is_day') else None
+    half = TWILIGHT_HALF_MIN * 60
+    t = dt.replace(tzinfo=None)
+    if abs((t - rise).total_seconds()) <= half or abs((t - sset).total_seconds()) <= half:
+        return 'yellow'
+    if rise < t < sset:
+        return 'red'
+    return None
+
+
 def get_weather_icon(code, is_day=1):
     if code == 0:
         return "icon_sun" if is_day else "icon_moon"
@@ -1670,6 +1695,10 @@ def render_screen(epd, fonts):
 
     # 1. Time & Date
     draw.text((col3_x, 10), dt.strftime("%H:%M"), font=fonts['clock'], fill=0)
+    if CLOCK_DAYLIGHT_COLORS:
+        ccolor = clock_color(dt, weather)
+        if ccolor:
+            color_overlays.append(('text', (col3_x, 10), dt.strftime("%H:%M"), fonts['clock'], ccolor))
 
     date_str = dt.strftime("%d %B %Y")
     day_str = dt.strftime("%a").upper()
