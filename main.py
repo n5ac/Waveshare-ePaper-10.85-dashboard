@@ -1322,17 +1322,21 @@ def clock_color(dt, weather):
 
 
 def draw_clock(draw, box, text, font, overlays, color=None, outline=0):
-    """Draw HH:MM centered in box (x0, y0, x1, y1) with fixed-width digit cells,
-    so the time doesn't shift sideways as proportional digits change."""
+    """Draw the time centered in box (x0, y0, x1, y1) with fixed-width digit
+    cells, so it doesn't shift sideways as proportional digits change. A space
+    is a narrow gap (used between hours and minutes instead of a colon)."""
     x0, y0, x1, y1 = box
     cell = max(text_width(font, c) for c in '0123456789')
-    colon_w = text_width(font, ':') + 0.24 * cell
-    total = sum(colon_w if c == ':' else cell for c in text)
+    sep_w = {':': text_width(font, ':') + 0.24 * cell, ' ': 0.3 * cell}
+    total = sum(sep_w.get(c, cell) for c in text)
     top, bottom = font.getbbox('0')[1], font.getbbox('0')[3]
     y = y0 + ((y1 - y0) - (bottom - top)) / 2 - top
     x = x0 + ((x1 - x0) - total) / 2
     for c in text:
-        cw = colon_w if c == ':' else cell
+        cw = sep_w.get(c, cell)
+        if c == ' ':
+            x += cw
+            continue
         cx = round(x + (cw - text_width(font, c)) / 2)
         draw.text((cx, round(y)), c, font=font, fill=0)
         if color:
@@ -1717,7 +1721,7 @@ def render_screen(epd, fonts):
 
     # 1. Time & Date
     ccolor = clock_color(dt, weather) if CLOCK_DAYLIGHT_COLORS else None
-    draw_clock(draw, (col3_x, 10, epd.width - 20, 160), dt.strftime("%H:%M"), fonts['clock'],
+    draw_clock(draw, (col3_x, 10, epd.width - 20, 160), dt.strftime("%H %M"), fonts['clock'],
                color_overlays, ccolor, CLOCK_YELLOW_OUTLINE_PX if ccolor == 'yellow' else 0)
 
     date_str = dt.strftime("%d %B %Y")
@@ -1888,7 +1892,7 @@ def main():
             '40': load_font('Aldrich-Regular.ttc', 40),
             '60': load_font('Aldrich-Regular.ttc', 60),
             '80': load_font('Aldrich-Regular.ttc', 80),
-            'clock': load_font('Orbitron-Bold.ttf', 106),  # OFL, see fnt/Orbitron-OFL.txt
+            'clock': load_font('Orbitron-Bold.ttf', 112),  # OFL, see fnt/Orbitron-OFL.txt
         }
 
         t_data = threading.Thread(target=update_data_thread)
