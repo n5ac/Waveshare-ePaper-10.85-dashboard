@@ -1336,26 +1336,30 @@ def spotify_track_key():
 
 
 def draw_clock(draw, box, text, font, overlays, color=None, outline=0):
-    """Draw the time centered in box (x0, y0, x1, y1) with fixed-width digit
-    cells, so it doesn't shift sideways as proportional digits change. A space
-    is a narrow gap (used between hours and minutes instead of a colon)."""
+    """Draw the time centered in box (x0, y0, x1, y1) with the font's own
+    (proportional) digit widths. A space is a narrow gap (used between hours
+    and minutes instead of a colon). Centering uses the inked width, so the
+    time is visually centered whatever the digits."""
     x0, y0, x1, y1 = box
-    cell = max(text_width(font, c) for c in '0123456789')
-    sep_w = {':': text_width(font, ':') + 0.24 * cell, ' ': 0.3 * cell}
-    total = sum(sep_w.get(c, cell) for c in text)
-    top, bottom = font.getbbox('0')[1], font.getbbox('0')[3]
-    y = y0 + ((y1 - y0) - (bottom - top)) / 2 - top
-    x = x0 + ((x1 - x0) - total) / 2
+    gap = 0.3 * max(text_width(font, c) for c in '0123456789')
+    # Pen positions for each character.
+    pos, x = [], 0.0
     for c in text:
-        cw = sep_w.get(c, cell)
         if c == ' ':
-            x += cw
+            x += gap
             continue
-        cx = round(x + (cw - text_width(font, c)) / 2)
-        draw.text((cx, round(y)), c, font=font, fill=0)
+        pos.append((c, x))
+        x += text_width(font, c)
+    left = min(px + font.getbbox(c)[0] for c, px in pos)
+    right = max(px + font.getbbox(c)[2] for c, px in pos)
+    top, bottom = font.getbbox('0')[1], font.getbbox('0')[3]
+    y = round(y0 + ((y1 - y0) - (bottom - top)) / 2 - top)
+    dx = x0 + ((x1 - x0) - (right - left)) / 2 - left
+    for c, px in pos:
+        cx = round(dx + px)
+        draw.text((cx, y), c, font=font, fill=0)
         if color:
-            overlays.append(('text', (cx, round(y)), c, font, color, outline))
-        x += cw
+            overlays.append(('text', (cx, y), c, font, color, outline))
 
 
 def get_weather_icon(code, is_day=1):
