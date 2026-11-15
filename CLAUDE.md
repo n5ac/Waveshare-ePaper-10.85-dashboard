@@ -105,7 +105,8 @@ A healthy run logs BUSY released after about 17-20 s on `display`.
 - Tempest (`ENABLE_TEMPEST`): local UDP broadcasts on port 50222, parsed by
   `tempest_listener_thread`. obs_st indexes: 2 wind avg, 4 dir, 8 RH, 10 UV,
   12 rain mm/min, 13 precip type, 14/15 strike dist/count. Overrides wind,
-  humidity and UV while fresh; rain and lightning totals are rolling 1 h sums.
+  humidity and UV while fresh. Rain: rolling 1 h and 24 h sums; rainy minutes
+  persist in `tempest_rain.json` (gitignored). Lightning: rolling 1 h, memory only.
 - bambulabs_api is vendored in `lib/`; use `mqtt_start()`, not `connect()`
   (which also streams the camera and saturated the Pi's Wi-Fi).
 

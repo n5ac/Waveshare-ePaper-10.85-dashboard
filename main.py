@@ -78,6 +78,7 @@ RAIN_UNIT = 'in'         # 'in' or 'mm' (also picks mi or km for lightning dista
 ENABLE_TEMPEST = True
 TEMPEST_UDP_PORT = 50222
 TEMPEST_STALE_S = 300    # ignore Tempest data older than this
+TEMPEST_RAIN_FILE = os.path.join(BASE_DIR, 'tempest_rain.json')  # keeps the 24 h rain total across restarts
 
 # --- API ENDPOINTS ---
 API_ENDPOINTS = {
@@ -888,17 +889,44 @@ def update_data_thread():
 
 
 # --- TEMPEST UDP LISTENER ---
+def load_rain_log():
+    """Rainy minutes from the last 24 h saved by save_rain_log (empty if none)."""
+    try:
+        with open(TEMPEST_RAIN_FILE) as f:
+            entries = json.load(f)
+        cutoff = time.time() - 86400
+        return deque((float(ts), float(mm)) for ts, mm in entries if float(ts) >= cutoff)
+    except FileNotFoundError:
+        return deque()
+    except Exception as e:
+        logging.warning(f"Tempest: ignoring unreadable {TEMPEST_RAIN_FILE}: {e}")
+        return deque()
+
+
+def save_rain_log(rain_log):
+    """Write the rain log atomically (only called on rainy minutes)."""
+    try:
+        tmp = TEMPEST_RAIN_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump([[round(ts), mm] for ts, mm in rain_log], f)
+        os.replace(tmp, TEMPEST_RAIN_FILE)
+    except Exception as e:
+        logging.warning(f"Tempest: could not save rain log: {e}")
+
+
 def tempest_listener_thread():
     """Receive the Tempest hub's UDP broadcasts on the LAN.
 
     obs_st (every minute) carries wind, humidity, UV, rain over the last
-    minute and lightning strikes in the last minute; the last hour of rain and
-    strikes is summed here (so it restarts when the dashboard restarts).
+    minute and lightning strikes in the last minute. Rain is summed here over
+    the last 1 h and 24 h; the rainy minutes are saved to TEMPEST_RAIN_FILE so
+    the totals survive a restart (rain while the Pi is off is missed). Strikes
+    are summed over the last hour in memory only.
     evt_strike gives the distance of each strike, evt_precip the start of rain.
     Units on the wire: m/s, %, mm, km.
     """
-    rain_log = deque()    # (received time, mm in that minute)
-    strike_log = deque()  # (received time, strikes in that minute)
+    rain_log = load_rain_log()  # (received time, mm) for rainy minutes, last 24 h
+    strike_log = deque()        # (received time, strikes in that minute)
     while True:
         sock = None
         try:
@@ -931,9 +959,11 @@ def tempest_listener_thread():
                     val = lambda i: ob[i] if len(ob) > i else None
                     rain_mm = val(12) or 0
                     strikes = val(15) or 0
-                    rain_log.append((now, rain_mm))
                     strike_log.append((now, strikes))
-                    while rain_log and rain_log[0][0] < now - 3600: rain_log.popleft()
+                    while rain_log and rain_log[0][0] < now - 86400: rain_log.popleft()
+                    if rain_mm > 0:
+                        rain_log.append((now, rain_mm))
+                        save_rain_log(rain_log)
                     while strike_log and strike_log[0][0] < now - 3600: strike_log.popleft()
                     with data_store.lock:
                         t = data_store.tempest
@@ -942,7 +972,8 @@ def tempest_listener_thread():
                             'wind_avg': val(2), 'wind_gust': val(3), 'wind_dir': val(4),
                             'humidity': val(8), 'uv': val(10),
                             'rain_min_mm': rain_mm, 'precip_type': val(13) or 0,
-                            'rain_1h_mm': sum(r for _, r in rain_log),
+                            'rain_1h_mm': sum(r for ts, r in rain_log if ts >= now - 3600),
+                            'rain_24h_mm': sum(r for _, r in rain_log),
                             'strikes_1h': sum(c for _, c in strike_log),
                         })
                         # evt_strike is more precise; fall back to the obs average.
@@ -1418,13 +1449,14 @@ def render_screen(epd, fonts):
             else:
                 draw.text((ax, y_c2), aqi_str, font=fonts['28'], fill=0)
 
-            draw.text((aqi_x, y_c2 + 42), f"Rain 1h: {format_rain(tp.get('rain_1h_mm', 0))}", font=fonts['20'], fill=0)
-            draw.text((aqi_x, y_c2 + 67), "RAINING" if tempest_is_raining(tp, now_ts) else "Not raining",
+            draw.text((aqi_x, y_c2 + 36), f"Rain 1h: {format_rain(tp.get('rain_1h_mm', 0))}", font=fonts['20'], fill=0)
+            draw.text((aqi_x, y_c2 + 59), f"Rain 24h: {format_rain(tp.get('rain_24h_mm', 0))}", font=fonts['20'], fill=0)
+            draw.text((aqi_x, y_c2 + 82), "RAINING" if tempest_is_raining(tp, now_ts) else "Not raining",
                       font=fonts['20'], fill=0)
-            draw.text((aqi_x, y_c2 + 97), f"Strikes 1h: {tp.get('strikes_1h', 0)}", font=fonts['20'], fill=0)
+            draw.text((aqi_x, y_c2 + 108), f"Strikes 1h: {tp.get('strikes_1h', 0)}", font=fonts['20'], fill=0)
             last_t = tp.get('last_strike_time', 0)
             if now_ts - last_t < 3 * 3600 and tp.get('last_strike_km') is not None:
-                draw.text((aqi_x, y_c2 + 122),
+                draw.text((aqi_x, y_c2 + 131),
                           f"Last: {format_distance(tp['last_strike_km'])}, {datetime.fromtimestamp(last_t):%H:%M}",
                           font=fonts['20'], fill=0)
         else:
@@ -1489,7 +1521,7 @@ def render_screen(epd, fonts):
     # 2. Claude AI OR Spotify OR Time Progress
     sp_y = 240
     # Clear background for widget
-    draw.rectangle((col3_x, sp_y, col3_x + 420, sp_y + 130), fill=255)
+    draw.rectangle((col3_x, sp_y, col3_x + 420, sp_y + 137), fill=255)
 
     if ENABLE_CLAUDE:
         draw.text((col3_x, sp_y), "CLAUDE AI USAGE", font=fonts['28'], fill=0)
@@ -1504,7 +1536,7 @@ def render_screen(epd, fonts):
 
             draw.text((col3_x, sp_y + 45), f"7-Day Limit: {round(pct_7d)}% (Resets in {rem_7d})", font=fonts['20'], fill=0)
             bx, bw, bh = col3_x, 400, 25
-            by = sp_y + 80
+            by = sp_y + 74
             draw.rectangle((bx, by, bx + bw, by + bh), outline=0, width=2)
             inner_w = bw - 4
             fill_w = int(inner_w * min(pct_7d / 100.0, 1.0))
@@ -1527,12 +1559,12 @@ def render_screen(epd, fonts):
                     inner = (mx - 1, by + 2, mx + 1, by + bh - 2)
                     draw.rectangle(inner, fill=255)
                     color_overlays.append(('rect', inner, 'white'))
-                ty = by + bh + 3
+                ty = by + bh + 4
                 draw.polygon([(mx, ty), (mx - 6, ty + 9), (mx + 6, ty + 9)], fill=0)
                 label = f"Even pace {round(elapsed)}%"
                 lw = text_width(fonts['20'], label)
                 lx = mx + 12 if mx + 12 + lw <= bx + bw + 20 else mx - 12 - lw
-                draw.text((lx, ty - 4), label, font=fonts['20'], fill=0)
+                draw.text((lx, ty + 4), label, font=fonts['20'], fill=0)
 
     elif ENABLE_SPOTIFY:
         if spotify['cover']:

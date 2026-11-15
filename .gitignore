@@ -9,3 +9,5 @@ roborock_stats.json
 # Runtime
 *.log
 __pycache__/
+tempest_rain.json
+tempest_rain.json.tmp
