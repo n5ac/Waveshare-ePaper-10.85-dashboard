@@ -5,33 +5,37 @@ Create an app at https://developer.spotify.com/dashboard (API: Web API,
 redirect URI exactly http://127.0.0.1:8888/callback), then on a machine with
 a web browser (e.g. the Mac):
 
-    python3 spotify_auth.py CLIENT_ID CLIENT_SECRET
+    python3 spotify_auth.py CLIENT_ID      # then paste the secret when asked
 
 Approve the access in the browser, then copy spotify_token.json to the
 dashboard directory on the Pi. It holds the client ID/secret and a refresh
 token, so main.py needs no other Spotify settings. Keep it out of git.
 """
 import base64
+import getpass
 import json
 import os
 import secrets
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
-
-import requests
 
 REDIRECT_URI = 'http://127.0.0.1:8888/callback'
 SCOPES = 'user-read-currently-playing user-read-recently-played'
 HERE = os.path.dirname(os.path.realpath(__file__))
 TOKEN = os.path.join(HERE, 'spotify_token.json')
 
-if len(sys.argv) != 3:
+if len(sys.argv) not in (2, 3):
     sys.exit(__doc__)
-client_id, client_secret = sys.argv[1], sys.argv[2]
+client_id = sys.argv[1]
+client_secret = sys.argv[2] if len(sys.argv) == 3 else getpass.getpass('Client secret (hidden): ').strip()
+if not client_secret:
+    sys.exit('No client secret given.')
 state = secrets.token_urlsafe(16)
 result = {}
 
@@ -75,13 +79,17 @@ if 'code' not in result:
     sys.exit(f"Sign-in failed: {result.get('error', 'timed out after 5 minutes')}")
 
 basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-resp = requests.post('https://accounts.spotify.com/api/token', timeout=15,
-                     headers={'Authorization': f'Basic {basic}'},
-                     data={'grant_type': 'authorization_code', 'code': result['code'],
-                           'redirect_uri': REDIRECT_URI})
-if resp.status_code != 200:
-    sys.exit(f"Token exchange failed ({resp.status_code}): {resp.text}")
-tok = resp.json()
+req = urllib.request.Request(
+    'https://accounts.spotify.com/api/token',
+    data=urllib.parse.urlencode({'grant_type': 'authorization_code', 'code': result['code'],
+                                 'redirect_uri': REDIRECT_URI}).encode(),
+    headers={'Authorization': f'Basic {basic}',
+             'Content-Type': 'application/x-www-form-urlencoded'})
+try:
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        tok = json.load(resp)
+except urllib.error.HTTPError as e:
+    sys.exit(f"Token exchange failed ({e.code}): {e.read().decode(errors='replace')}")
 
 with open(TOKEN, 'w') as f:
     json.dump({'client_id': client_id, 'client_secret': client_secret,
