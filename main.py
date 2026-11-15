@@ -20,7 +20,7 @@ import calendar
 import urllib.parse
 from collections import deque
 from datetime import datetime, timezone
-from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageEnhance, ImageFilter
 from logging.handlers import RotatingFileHandler
 
 # --- GMAIL IMPORTS ---
@@ -114,6 +114,7 @@ LASTFM_CONF = {
 # Spotify: if spotify_token.json exists (made by spotify_auth.py), the Spotify
 # Web API is used directly; otherwise Last.fm (LASTFM_CONF) if configured.
 SPOTIFY_TOKEN_FILE = os.path.join(BASE_DIR, 'spotify_token.json')
+SPOTIFY_COVER_COLOR = True  # (G) panel: album cover in black/white/red/yellow; False = B/W
 
 STRAVA_CONF = {
     'TOKEN_FILE': os.path.join(BASE_DIR, 'strava_token.json')
@@ -866,13 +867,15 @@ def update_data_thread():
                                'artist': info['artist'], 'track': info['track']}
                         # Download the cover only when it changes.
                         if info['img_url'] != data_store.spotify.get('cover_url'):
-                            cover = None
+                            cover = cover_rgb = None
                             img_bytes = net.get_image(info['img_url']) if info['img_url'] else None
                             if img_bytes:
-                                img_pil = Image.open(io.BytesIO(img_bytes)).convert("L").resize((120, 120))
-                                img_pil = ImageEnhance.Contrast(img_pil).enhance(3.0)
-                                cover = img_pil.convert("1", dither=Image.NONE)
-                            upd.update({'cover': cover, 'cover_url': info['img_url']})
+                                src = Image.open(io.BytesIO(img_bytes)).convert("RGB").resize((120, 120), Image.LANCZOS)
+                                g = ImageEnhance.Contrast(src.convert("L")).enhance(3.0)
+                                cover = g.convert("1", dither=Image.NONE)
+                                if PANEL_TYPE == 'G' and SPOTIFY_COVER_COLOR:
+                                    cover_rgb = cover_to_panel_colors(src)
+                            upd.update({'cover': cover, 'cover_rgb': cover_rgb, 'cover_url': info['img_url']})
                         with data_store.lock:
                             data_store.spotify.update(upd)
                 except Exception:
@@ -1134,6 +1137,30 @@ def draw_ping_bars(draw, x, y, data, overlays, max_items=50, width=400, height=4
         if color and bh > 0: overlays.append(('rect', rect, color))
 
 
+# Approximate ink colors of the (G) panel. Dithering against these (rather than
+# pure RGB) matches what the eye sees; the result is drawn in the pure palette.
+_INK_RGB = [(25, 25, 25), (225, 225, 215), (225, 200, 0), (180, 30, 30)]
+_PURE_RGB = [(0, 0, 0), (255, 255, 255), (255, 255, 0), (255, 0, 0)]
+_ink_pal = Image.new('P', (1, 1))
+_ink_pal.putpalette(sum(_INK_RGB, ()) + (0, 0, 0) * 252)
+
+
+def cover_to_panel_colors(src):
+    """Album cover -> RGB image using only black/white/yellow/red.
+
+    Saturated areas are Floyd-Steinberg dithered in all four colors; neutral
+    areas (grays, cream, pastels) are dithered in black and white only, with
+    near-white pushed to white, so they don't get red/yellow speckle.
+    """
+    sat = src.convert('HSV').split()[1].filter(ImageFilter.GaussianBlur(1.2))
+    q = ImageEnhance.Color(src).enhance(1.3).quantize(palette=_ink_pal, dither=Image.FLOYDSTEINBERG)
+    q.putpalette(sum(_PURE_RGB, ()) + (0, 0, 0) * 252)
+    color = q.convert('RGB')
+    lv = lambda v: 0 if v <= 50 else 255 if v >= 195 else int((v - 50) * 255 / 145)
+    bw = src.convert('L').point(lv).convert('1', dither=Image.FLOYDSTEINBERG).convert('RGB')
+    return Image.composite(color, bw, sat.point(lambda v: 255 if v > 90 else 0))
+
+
 _spotify_tok = {}
 
 
@@ -1290,7 +1317,7 @@ def render_screen(epd, fonts):
     Himage = Image.new('1', (epd.width, epd.height), 255)
     draw = ImageDraw.Draw(Himage)
     # Painted in color after the 1-bit render (G panel only):
-    #   ('rect', rect, color) or ('text', xy, text, font, color)
+    #   ('rect', rect, color), ('text', xy, text, font, color) or ('image', xy, rgb_image)
     color_overlays = []
 
     if not data_store.lock.acquire(timeout=2.0): return Himage
@@ -1450,6 +1477,8 @@ def render_screen(epd, fonts):
         # Spotify (via Last.fm) takes the Internet Quality slot once connected.
         if spotify['cover']:
             Himage.paste(spotify['cover'], (col1_x, y3))
+            if spotify.get('cover_rgb') is not None:
+                color_overlays.append(('image', (col1_x, y3), spotify['cover_rgb']))
         else:
             draw_icon(draw, col1_x, y3, "icon_spotify", (120, 120))
         tx = col1_x + 135
@@ -1745,6 +1774,9 @@ def render_screen(epd, fonts):
             if item[0] == 'rect':
                 _, rect, color = item
                 cdraw.rectangle(rect, fill=color)
+            elif item[0] == 'image':
+                _, xy, img = item
+                Himage.paste(img, xy)
             else:
                 _, xy, text, font, color = item
                 cdraw.text(xy, text, font=font, fill=color)

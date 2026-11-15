@@ -117,6 +117,8 @@ Set `ENABLE_SPOTIFY = True`. Once connected, the current track (or the last one 
 3. On a computer with a browser (e.g. the Mac), in this folder: `python3 spotify_auth.py CLIENT_ID`, paste the client secret at the hidden prompt, then approve in the browser. This writes `spotify_token.json` (gitignored).
 4. Copy it to the Pi, e.g. `scp spotify_token.json n5ac@N5AC-MON:~/Waveshare-ePaper-10.85-dashboard/`, and restart the dashboard. The token renews itself; no further sign-ins.
 
+On the 4-color (G) panel the album cover is drawn in black/white/red/yellow (color only where the cover is clearly colorful; neutral areas stay black and white). Set `SPOTIFY_COVER_COLOR = False` for the old black-and-white cover.
+
 **Alternative (Last.fm):** if `spotify_token.json` is absent, the dashboard reads now-playing from Last.fm instead. Link Spotify to a Last.fm account, create a Last.fm API key, and put the key and your username in `LASTFM_CONF`.
 
 ### Tempest Weather Station
