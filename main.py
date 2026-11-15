@@ -1321,6 +1321,25 @@ def clock_color(dt, weather):
     return None
 
 
+def draw_clock(draw, box, text, font, overlays, color=None, outline=0):
+    """Draw HH:MM centered in box (x0, y0, x1, y1) with fixed-width digit cells,
+    so the time doesn't shift sideways as proportional digits change."""
+    x0, y0, x1, y1 = box
+    cell = max(text_width(font, c) for c in '0123456789')
+    colon_w = text_width(font, ':') + 0.24 * cell
+    total = sum(colon_w if c == ':' else cell for c in text)
+    top, bottom = font.getbbox('0')[1], font.getbbox('0')[3]
+    y = y0 + ((y1 - y0) - (bottom - top)) / 2 - top
+    x = x0 + ((x1 - x0) - total) / 2
+    for c in text:
+        cw = colon_w if c == ':' else cell
+        cx = round(x + (cw - text_width(font, c)) / 2)
+        draw.text((cx, round(y)), c, font=font, fill=0)
+        if color:
+            overlays.append(('text', (cx, round(y)), c, font, color, outline))
+        x += cw
+
+
 def get_weather_icon(code, is_day=1):
     if code == 0:
         return "icon_sun" if is_day else "icon_moon"
@@ -1697,12 +1716,9 @@ def render_screen(epd, fonts):
     dt = datetime.now()
 
     # 1. Time & Date
-    draw.text((col3_x, 10), dt.strftime("%H:%M"), font=fonts['clock'], fill=0)
-    if CLOCK_DAYLIGHT_COLORS:
-        ccolor = clock_color(dt, weather)
-        if ccolor:
-            color_overlays.append(('text', (col3_x, 10), dt.strftime("%H:%M"), fonts['clock'], ccolor,
-                                   CLOCK_YELLOW_OUTLINE_PX if ccolor == 'yellow' else 0))
+    ccolor = clock_color(dt, weather) if CLOCK_DAYLIGHT_COLORS else None
+    draw_clock(draw, (col3_x, 10, epd.width - 20, 160), dt.strftime("%H:%M"), fonts['clock'],
+               color_overlays, ccolor, CLOCK_YELLOW_OUTLINE_PX if ccolor == 'yellow' else 0)
 
     date_str = dt.strftime("%d %B %Y")
     day_str = dt.strftime("%a").upper()
@@ -1872,7 +1888,7 @@ def main():
             '40': load_font('Aldrich-Regular.ttc', 40),
             '60': load_font('Aldrich-Regular.ttc', 60),
             '80': load_font('Aldrich-Regular.ttc', 80),
-            'clock': load_font('advanced_led_board-7.ttc', 180),
+            'clock': load_font('Orbitron-Bold.ttf', 106),  # OFL, see fnt/Orbitron-OFL.txt
         }
 
         t_data = threading.Thread(target=update_data_thread)
@@ -1894,7 +1910,18 @@ def main():
         if PANEL_TYPE == 'G':
             # The first (G) frame stays up for REFRESH_INTERVAL_G seconds, so
             # give the data thread a head start instead of showing empty widgets.
+            boot = time.time()
             time.sleep(20)
+            if ENABLE_TEMPEST:
+                # obs_st (rain, lightning, humidity, UV) arrives once a minute;
+                # wait for the first one so the rain lines aren't missing for
+                # the whole first frame.
+                while time.time() - boot < 75:
+                    with data_store.lock:
+                        if data_store.tempest.get('obs_time', 0): break
+                    time.sleep(1)
+                else:
+                    logging.warning("Tempest: no observation yet; first frame without station data")
 
         while True:
             start_time = time.time()
