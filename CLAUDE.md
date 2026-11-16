@@ -42,7 +42,8 @@ Commits made in this session (on top of upstream `ceced5e`):
   instantly after PON and refresh, and nothing is drawn. The panel needs CS held
   low across each whole command sequence (`cs_all(0) ... cs_all(1)`), and the
   frame load is done with CS held per controller. Don't "simplify" this back to
-  spidev.
+  spidev-controlled CS. (spidev in `SPI_NO_CS` mode for the data bytes only is
+  fine and is now the default; see the glitch note below.)
 - **No partial refresh on (G).** The main loop does init → display → sleep (deep
   sleep) every `REFRESH_INTERVAL_G` (300 s). Startup does init+sleep only (no
   Clear) and waits 20 s before the first frame so the data thread can fill in.
@@ -70,6 +71,18 @@ Commits made in this session (on top of upstream `ceced5e`):
 4. Root cause 2: the first (G) port used spidev, and BUSY released in 0.00 s
    with nothing drawn. Switched to Waveshare's library, and the test pattern
    (red/yellow quadrants, black block across the seam) rendered correctly.
+
+Transient glitch seen 2026-11-15: a large yellow block covering the left half
+(master controller) from about row 200 to the bottom, with all black content
+intact. Cause: a one-bit slip in the SPI frame stream. In 2bpp, white `01 01...`
+shifted by one bit reads `10 10...` = yellow, while black `00` is unchanged.
+Not a rendering bug: the same image rendered cleanly after a restart. It recurred
+on the slave half, where the clock digits visibly shifted by about a pixel at the
+boundary. Root cause: Waveshare's `DEV_SPI_SendData` bit-bangs SCLK/MOSI with no
+delays (disassembled; it never uses the SPI block), so clock pulses are narrow
+and uneven. Fix (2026-11-15): `epdconfig_g` sends bytes via `/dev/spidev0.0` in
+`SPI_NO_CS` mode at 2 MHz, restoring GPIO 10/11 to ALT0 after `DEV_ModuleInit`;
+chip select stays manual GPIO. `EPD_G_SPI=soft` forces the old bit-banging.
 
 Bring-up test for the driver alone (run on the Pi, about 25 s):
 ```python
