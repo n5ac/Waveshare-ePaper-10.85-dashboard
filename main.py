@@ -1073,6 +1073,7 @@ def usage_bar_color(pct):
 # "Even pace" = elapsed fraction of the window (day 3 of 7 -> 42.9 %).
 # Yellow when usage > 80 % of even pace, red when > 90 % of even pace.
 CLAUDE_WINDOW_S = 7 * 24 * 3600
+CLAUDE_SCOPED_MODELS = ('Fable',)  # per-model weekly limits to show under the 7-day bar
 PACE_WARN_FRAC = 0.80
 PACE_CRIT_FRAC = 0.90
 
@@ -1743,21 +1744,21 @@ def render_screen(epd, fonts):
 
     # 1. Time & Date
     ccolor = clock_color(dt, weather) if CLOCK_DAYLIGHT_COLORS else None
-    draw_clock(draw, (col3_x, 10, epd.width - 20, 160), dt.strftime("%H%M"), fonts['clock'],
+    draw_clock(draw, (col3_x, 8, epd.width - 20, 118), dt.strftime("%H%M"), fonts['clock'],
                color_overlays, ccolor, CLOCK_YELLOW_OUTLINE_PX if ccolor == 'yellow' else 0)
 
     date_str = dt.strftime("%d %B %Y")
     day_str = dt.strftime("%a").upper()
 
-    draw.text((col3_x, 170), date_str, font=fonts['32'], fill=0)
-    draw.text((col3_x + 340, 170), day_str, font=fonts['32'], fill=0)
+    draw.text((col3_x, 124), date_str, font=fonts['32'], fill=0)
+    draw.text((col3_x + 340, 124), day_str, font=fonts['32'], fill=0)
 
-    draw.line((col3_x, 220, epd.width - 20, 220), fill=0, width=2)
+    draw.line((col3_x, 166, epd.width - 20, 166), fill=0, width=2)
 
     # 2. Claude AI OR Time Progress (Spotify is in column 1)
-    sp_y = 240
-    # Clear background for widget
-    draw.rectangle((col3_x, sp_y, col3_x + 420, sp_y + 137), fill=255)
+    sp_y = 182
+    # Clear background for widget (down to the divider above Gmail at y=380)
+    draw.rectangle((col3_x, sp_y, col3_x + 420, 376), fill=255)
 
     if ENABLE_CLAUDE:
         draw.text((col3_x, sp_y), "CLAUDE AI USAGE", font=fonts['28'], fill=0)
@@ -1765,42 +1766,57 @@ def render_screen(epd, fonts):
         if claude.get('error'):
             draw.text((col3_x, sp_y + 50), "Claude Usage Error", font=fonts['24'], fill=0)
         else:
-            # 7-Day Limit (the only Claude limit now; the 5-hour window is gone)
-            pct_7d = claude.get('seven_day', {}).get('utilization', 0)
-            resets_7d = claude.get('seven_day', {}).get('resets_at')
-            rem_7d = time_until(resets_7d)
+            # 7-day limit plus per-model weekly limits (e.g. Fable): one bar
+            # each, label on the left, one shared even-pace marker underneath.
+            seven = claude.get('seven_day', {})
+            resets_7d = seven.get('resets_at')
+            rows = [("7-Day", seven.get('utilization', 0) or 0, resets_7d)]
+            for sc in claude.get('scoped', []):
+                if sc.get('name') in CLAUDE_SCOPED_MODELS:
+                    rows.append((sc['name'], sc.get('utilization', 0) or 0, sc.get('resets_at')))
 
-            draw.text((col3_x, sp_y + 45), f"7-Day Limit: {round(pct_7d)}% (Resets in {rem_7d})", font=fonts['20'], fill=0)
-            bx, bw, bh = col3_x, 400, 25
-            by = sp_y + 74
-            draw.rectangle((bx, by, bx + bw, by + bh), outline=0, width=2)
+            draw.text((col3_x, sp_y + 40), f"Weekly limits (Resets in {time_until(resets_7d)})",
+                      font=fonts['20'], fill=0)
+
+            lw_col = max(text_width(fonts['20'], f"{name} 100%") for name, _, _ in rows) + 10
+            bx, bh = col3_x + lw_col, 24
+            bw = 400 - lw_col
             inner_w = bw - 4
-            fill_w = int(inner_w * min(pct_7d / 100.0, 1.0))
-            elapsed = window_elapsed_pct(resets_7d)
-            color = usage_pace_color(pct_7d, elapsed)
-            if fill_w > 0:
-                rect = (bx + 2, by + 2, bx + 2 + fill_w, by + bh - 2)
-                draw.rectangle(rect, fill=0)
-                if color: color_overlays.append(('rect', rect, color))
+            row_dy = 40
+            first_by = sp_y + 76
+            fills = []
+            for i, (name, pct, resets) in enumerate(rows):
+                by = first_by + i * row_dy
+                draw.text((col3_x, by), f"{name} {round(pct)}%", font=fonts['20'], fill=0)
+                draw.rectangle((bx, by, bx + bw, by + bh), outline=0, width=2)
+                fill_w = int(inner_w * min(pct / 100.0, 1.0))
+                color = usage_pace_color(pct, window_elapsed_pct(resets))
+                if fill_w > 0:
+                    rect = (bx + 2, by + 2, bx + 2 + fill_w, by + bh - 2)
+                    draw.rectangle(rect, fill=0)
+                    if color: color_overlays.append(('rect', rect, color))
+                fills.append((by, fill_w))
 
+            elapsed = window_elapsed_pct(resets_7d)
             if elapsed is not None:
                 # Pace marker: where usage would be at an even burn rate. A
-                # 3 px line through the bar (white over the fill so it shows),
-                # with a pointer and label underneath.
+                # 3 px line through every bar (white over fills so it shows),
+                # with a pointer and label under the last bar.
+                last_by = fills[-1][0]
                 mx = bx + 2 + int(inner_w * elapsed / 100.0)
                 mx = max(bx + 3, min(mx, bx + bw - 3))
-                line = (mx - 1, by - 5, mx + 1, by + bh + 2)
-                draw.rectangle(line, fill=0)
-                if fill_w > 0 and mx - 1 <= bx + 2 + fill_w:
-                    inner = (mx - 1, by + 2, mx + 1, by + bh - 2)
-                    draw.rectangle(inner, fill=255)
-                    color_overlays.append(('rect', inner, 'white'))
-                ty = by + bh + 4
+                draw.rectangle((mx - 1, first_by - 5, mx + 1, last_by + bh + 2), fill=0)
+                for by, fill_w in fills:
+                    if fill_w > 0 and mx - 1 <= bx + 2 + fill_w:
+                        inner = (mx - 1, by + 2, mx + 1, by + bh - 2)
+                        draw.rectangle(inner, fill=255)
+                        color_overlays.append(('rect', inner, 'white'))
+                ty = last_by + bh + 4
                 draw.polygon([(mx, ty), (mx - 6, ty + 9), (mx + 6, ty + 9)], fill=0)
                 label = f"Even pace {round(elapsed)}%"
                 lw = text_width(fonts['20'], label)
-                lx = mx + 12 if mx + 12 + lw <= bx + bw + 20 else mx - 12 - lw
-                draw.text((lx, ty + 4), label, font=fonts['20'], fill=0)
+                lx = mx + 12 if mx + 12 + lw <= col3_x + 420 else mx - 12 - lw
+                draw.text((lx, ty + 2), label, font=fonts['20'], fill=0)
 
     else:
         # Fallback: Time Progress

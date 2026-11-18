@@ -212,6 +212,15 @@ def save_usage(raw: dict):
             "utilization": seven.get("utilization", 0) if seven else 0,
             "resets_at": seven.get("resets_at") if seven else None,
         },
+        # Per-model weekly limits (e.g. Fable), from the "limits" list.
+        "scoped": [
+            {"name": ((lim.get("scope") or {}).get("model") or {}).get("display_name"),
+             "utilization": lim.get("percent") or 0,
+             "resets_at": lim.get("resets_at")}
+            for lim in raw.get("limits") or []
+            if lim.get("kind") == "weekly_scoped"
+            and ((lim.get("scope") or {}).get("model") or {}).get("display_name")
+        ],
     }
     USAGE_FILE.write_text(json.dumps(output, indent=2))
 
